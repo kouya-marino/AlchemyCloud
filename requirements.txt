@@ -1,0 +1,9 @@
+open3d>=0.17.0
+numpy>=1.21
+PyQt5>=5.15
+PyYAML>=6.0
+Pillow>=9.0
+pyqtgraph>=0.13
+PyOpenGL>=3.1
+scipy>=1.10
+matplotlib>=3.7

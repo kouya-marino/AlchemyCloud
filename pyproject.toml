@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alchemycloud"
+version = "1.2.0"
+description = "Desktop GUI for editing LiDAR point clouds and exporting ROS occupancy/cost maps"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Prashant Rawat", email = "prashantrawatmailbox@gmail.com"},
+]
+keywords = ["lidar", "point-cloud", "pcd", "occupancy-grid", "costmap", "ros", "open3d", "gui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "open3d>=0.17.0",
+    "numpy>=1.21",
+    "PyQt5>=5.15",
+    "PyYAML>=6.0",
+    "Pillow>=9.0",
+    "pyqtgraph>=0.13",
+    "PyOpenGL>=3.1",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/kouya-marino/AlchemyCloud"
+Repository = "https://github.com/kouya-marino/AlchemyCloud"
+Issues = "https://github.com/kouya-marino/AlchemyCloud/issues"
+
+[project.gui-scripts]
+alchemycloud = "alchemycloud.app:main"
+
+[tool.setuptools.packages.find]
+include = ["alchemycloud*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

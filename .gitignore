@@ -1,0 +1,52 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Test / coverage
+.pytest_cache/
+htmlcov/
+coverage.xml
+.coverage
+
+# Logs
+*.log
+
+# Claude Code / project config
+.claude/
+
+# ---------------------------------------------------------------------------
+# Project data / scratch dirs — large sample clouds & maps, NOT source.
+# These must never be committed (hundreds of MB).
+# ---------------------------------------------------------------------------
+Data/
+Dekopon_new/
+Taro_test/
+TEMP/
+temp file/
+test/
+
+# Point-cloud / map data files anywhere
+*.pcd
+*.ply
+*.pgm

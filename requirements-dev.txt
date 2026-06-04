@@ -1,0 +1,4 @@
+# Development-only dependencies. Install with:
+#   pyenv exec pip install -r requirements-dev.txt
+# Production deps stay in requirements.txt.
+pytest>=7.0
