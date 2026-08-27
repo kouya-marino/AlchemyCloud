@@ -91,6 +91,26 @@ def test_tristate_separates_free_and_occupied(floor_with_chair):
     assert occ + free + unknown == grid.image.size
 
 
+def test_tristate_empty_cells_free(floor_with_chair):
+    """With `tristate_empty_unknown=False`, unobserved/padding cells are painted
+    FREE (white) instead of UNKNOWN (grey) — no unknown cells remain."""
+    params = occupancy.GridParams(
+        resolution=0.1,
+        z_min=-0.1,
+        z_max=1.0,
+        height_threshold=0.2,
+        tristate_empty_unknown=False,
+    )
+    grid = occupancy.build(floor_with_chair, params)
+    occ = int((grid.image == occupancy.OCC).sum())
+    free = int((grid.image == occupancy.FREE).sum())
+    unknown = int((grid.image == occupancy.UNKNOWN).sum())
+    assert unknown == 0
+    assert occ > 0
+    assert free > 0
+    assert occ + free == grid.image.size
+
+
 def test_tristate_with_voxel3d(floor_with_chair):
     params = occupancy.GridParams(
         resolution=0.1,
