@@ -11,6 +11,217 @@ numbers and groupings mirror the curated overview in
 
 _Nothing yet._
 
+## [1.3.0] — 2026-08-27
+
+_Theme: review, remediation and true colour._
+
+### Added
+- **True-colour (RGB) view with a brightness control** — the **Color** combo
+  on the Edit toolbar gains a fourth entry, **RGB**, which renders each point
+  in the colour stored in the file (an `rgb` field in `.pcd`, `red`/`green`/
+  `blue` in `.ply`) instead of a viridis ramp along an axis. Two companion
+  controls set the exposure: **Bright** (display gamma, `0.20`–`3.00`,
+  default `0.62`) and **Auto-level** (per-channel 1–99 % contrast stretch,
+  default on). Raw indoor colour scans are heavily under-exposed — a mean
+  channel value near `0.5` is typical, which renders close to black — so the
+  defaults lift them; **Bright** `1.00` with **Auto-level** off reproduces the
+  file's values exactly. Both controls are disabled unless Color is RGB, the
+  colorbar legend hides in RGB mode (colour no longer encodes a scalar), and a
+  cloud with no colour renders flat grey with a status-bar explanation.
+  Backed by `EmbeddedViewer.set_color_axis("rgb")`, `set_rgb_gamma()`,
+  `set_rgb_autolevel()` and `has_source_colors()`.
+
+  Tone mapping is display-only and never touches the point data, so editing
+  and saving a colour cloud round-trips its colours unchanged. The viewer now
+  snapshots the display cloud's own RGB in `prepare_cloud` *before*
+  `colorize_by_axis` overwrites it (promoted to `_source_rgb` in
+  `apply_prepared_cloud`), which is what lets RGB → Z → RGB return the
+  original colours rather than a re-mapped copy.
+
+- **Background-colour choice on PGM export, as two separate controls** —
+  the Occupancy Grid Preview dialog gains **"Unobserved cells (tristate)"**
+  and **"Non-obstacle cells (binary)"**, each enabled only for its own
+  policy. Tristate defaults to **Unknown (grey, 205)**; binary defaults to
+  **Free (white, 254)**, matching `GridParams.unknown_outside_footprint`.
+  Backed by `occupancy.GridParams.tristate_empty_unknown`.
+
+  These are deliberately *not* one control. In tristate, "empty" means never
+  observed and observed floor is still FREE, so grey marks genuinely unseen
+  space. In binary there is no observed/unobserved distinction — every
+  non-occupied cell is background — so grey there paints the navigable
+  interior too and the exported map contains **zero FREE cells**. An earlier
+  revision of this feature drove both flags from a single combo defaulting to
+  grey, which silently flipped the binary default and produced maps a nav
+  stack would treat as entirely unknown.
+
+- **Logging and a bug-report surface** — `alchemycloud` now writes a rotating
+  log (1 MB x 4) to a platform-appropriate directory (`$XDG_STATE_HOME/
+  alchemycloud` on Linux, `%LOCALAPPDATA%` on Windows, `~/Library/Logs` on
+  macOS) and installs a `sys.excepthook` that logs unhandled exceptions and
+  shows them in a dialog. PyQt5 does not abort on an exception that escapes a
+  slot — it printed a traceback to a stderr the user could not see and carried
+  on with corrupt state. There was previously no logging anywhere.
+
+- **`alchemycloud --version` / `-v` and a real argument parser.** `argv[1]`
+  used to be passed straight to the loader whatever it was; a missing file now
+  gives one clear message. The window title carries the version, so a
+  screenshot identifies the build.
+
+- **`__version__`** in `alchemycloud/__init__.py`, read from installed
+  distribution metadata with a pyproject.toml fallback for source checkouts.
+  The version was previously written independently in four places.
+
+### Changed
+- **`display_downsample` now uses uniform random sampling** instead of a
+  cube-root voxel heuristic. The old formula assumed points fill a cube; a
+  LiDAR floor scan is a slab, so the voxel came out one to two orders of
+  magnitude too coarse — on a 2.2 M-point 24 x 36 x 1.8 m room scan it
+  rendered **1,580 points, 0.32 % of the 500 k budget**, and its correction
+  loop could only decimate further. Random sampling hits the budget exactly,
+  is O(n), and keeps real source points rather than centroids.
+- **Point clouds render depth-tested and opaque.** pyqtgraph defaults
+  `GLScatterPlotItem` to `additive` (`GL_DEPTH_TEST` off,
+  `glBlendFunc(SRC_ALPHA, ONE)`), so overlapping points summed instead of
+  occluding: ~7 % of lit pixels blew past white on a 178 k-point room scan,
+  and nothing hid anything, so the cloud read as haze rather than surfaces.
+- **`min_points_per_cell` now applies to every method and policy** — raw
+  points for `projection`, occupied voxels in the column for `voxel3d`, and
+  returns above the threshold in tristate. It was documented as "ignored by
+  voxel3d"; in reality any value above 1 produced a near-blank map, and
+  tristate ignored it entirely so one stray return planted an obstacle.
+- **`occupancy.save` writes `mode: trinary`** explicitly (nav2 defaults to it
+  when absent; ROS 1 ignores the key) and **refuses `negate != 0`**, which
+  would have inverted the map since pixels are always written in the
+  `negate: 0` convention.
+- `requires-python` is now `>=3.10,<3.13`. open3d 0.19 publishes cp38–cp312
+  wheels and no sdist, so `pip install alchemycloud` could not resolve on
+  3.13+ despite the metadata claiming support.
+- `requirements-dev.txt` now matches pyproject's `dev` extra (adds
+  `pytest-cov`, `ruff`). CI gates on ruff, so it belonged there.
+- `publish.yml` runs lint + the test suite and checks the tag matches
+  `project.version` before publishing. It previously published on any
+  `v*.*.*` tag with no tests and no version check — all seven of
+  `v0.1.0`…`v1.2.0` point at the same commit, so it fired seven times each
+  trying to upload 1.2.0.
+
+### Fixed
+- **"Level Ground" and "Remove Ground" fitted any dominant plane, and on a
+  real room scan picked a wall.** `segment_plane` returns the plane with the
+  most inliers; on `ppt_15july.pcd` (2.2 M points, 24 x 36 x **1.8** m) the
+  winning plane had normal ~[0.99, 0.11, 0.06] with 383 k inliers against the
+  floor's 210 k. Levelling against it rotated the cloud 83–88° and turned a
+  1.8 m-thick scan into a 21.6 m-thick one — then the map was exported from
+  that. New `pcd_ops.fit_ground_plane` restricts candidates to the lowest
+  `floor_band` (default 30 %) of the Z range *and* rejects any fit more than
+  `max_tilt_deg` (default 30°) from horizontal, retrying on the remaining
+  points. With no near-horizontal plane at all it raises with an explanation
+  instead of applying a nonsensical rotation. Measured after the fix: tilt
+  0.26°, Z extent preserved at 1.94 m. `remove_ground_ransac` also now selects
+  inliers against the full cloud by point-to-plane distance.
+- **A failed save reported success.** `save_pcd` discarded the `bool` from
+  `o3d.io.write_point_cloud`, which returns `False` and logs to stderr rather
+  than raising. Saving to a missing or unwritable directory wrote nothing,
+  raised nothing, and the status bar said "Saved to <path>". It now raises,
+  and rejects an extension-less filename Open3D cannot infer a format from.
+- **No unsaved-changes protection.** There was no dirty tracking at all and
+  `closeEvent` never prompted, so an editing session could be lost by closing
+  the window. Mutating operations now set a dirty flag and closing offers
+  Save / Discard / Cancel. Headless drivers can set
+  `MainWindow.prompt_unsaved_on_close = False`.
+- **One NaN or one glitch return broke export.** Nothing filtered non-finite
+  points: a single `nan` raised "cannot convert float NaN to integer" and
+  rendered the whole cloud black, and a single `x=1e9` specular return asked
+  for a 1.82 TiB allocation. `load_pcd` now strips non-finite points (and
+  reports how many), `colorize_by_axis` and `stats` are nan-safe, and
+  `occupancy` filters non-finite rows before indexing.
+- **No guard on grid size.** The resolution spin box's own minimum (0.005 m)
+  on a 200 m scan asked for 1.6 G cells — 6.4 GB of counts plus a 1.6 GB
+  image, i.e. swap-thrash rather than a clean error. `occupancy` now caps at
+  25 M cells (both prototype scripts capped at 4 M) and, when a few stray
+  points rather than the scan itself inflated the extent, says so and suggests
+  outlier removal.
+- **`voxel3d` punched one-cell holes through solid walls.** It converted
+  integer voxel indices back to float centres `(k + 0.5) * res` and re-derived
+  the cell with `floor((x - x_min) / res)`; that round trip is not exact in
+  float64, so ~5 % of columns landed one cell low, merging with a neighbour and
+  leaving a free gap in a wall — with the pattern changing as `padding_cells`
+  changed. The grid frame is now built from the integer indices directly, exact
+  by construction.
+- **`padding_cells=0` crashed on a cloud with no extent in one axis** —
+  `width = ceil(0/res) = 0`, then `clip(ix, 0, -1)` indexed a zero-width array
+  (`IndexError: index -1 is out of bounds`). Both axes are now at least one
+  cell.
+- **`occupancy.save` truncated any filename containing a dot** —
+  `with_suffix` turned `3F_map_v1.2` into `3F_map_v1.pgm`. The extension is
+  now appended.
+- **The preview dialog could write a stale grid and report "Saved".** If the
+  pre-save rebuild failed, `_last_grid` still held the previous successful
+  render and the pending-save path wrote that. Build failure is now recorded
+  and `_do_save` refuses. The 50 ms self-rescheduling poll — which kept firing
+  after the dialog closed, and could pop a file dialog from a dead window — is
+  replaced by a flag the render's completion consumes.
+- **A failed map export said nothing.** `occupancy.save` runs on the main
+  thread, so the worker's error plumbing did not apply: the exception escaped
+  the slot and the old stats stayed on screen. It now shows a dialog.
+- **The preview legend contradicted the image beside it** — the swatches had
+  occupied on white and unknown on dark, the inverse of the PGM's
+  occupied=0 / free=254 / unknown=205.
+- **Opening a second file left the first file's redo stack live.** `load_path`
+  cleared `history` but not `redo_stack`, so Redo popped a cloud belonging to
+  the *previous* file into `current_pcd` while `current_path` still named the
+  new one — and Ctrl+S then wrote the old cloud under the new file's name.
+- **Every edit destroyed the marker pose.** `apply_prepared_cloud` called
+  `reset_marker()` unconditionally, so voxel, SOR, z-clip, crop, an eraser
+  stroke, undo, redo and even Reset Camera zeroed a marker the user had
+  positioned — after which "Apply Marker as Origin" reported "Marker is
+  already at the origin". It is now opt-in via `reset_marker=True`, passed
+  only on file load and after applying the marker.
+- **The marker teleported when only yaw was edited.** `_refresh_state`
+  clamped the X/Y spin ranges to the cloud bounding box, pulling a marker
+  legitimately placed outside the scanned area back inside. The range now
+  always includes the marker's current position.
+- **Menus and keyboard shortcuts stayed live during long operations.** The
+  loading overlay only eats mouse events on the canvas, so Ctrl+O mid-RANSAC
+  could start a second job. Menu actions are now disabled while busy, and
+  `action_open` has its own guard.
+- **Z-Slab bounds had two sources of truth.** The viewer normalised an
+  inverted low/high pair by swapping; crop and eraser read the raw spin boxes
+  and became silent no-ops. Both now read `viewer.slab_bounds()`.
+- **Enabling Crop or Marker left the Eraser button looking active.** The
+  viewer cleared eraser state internally but the toolbar button kept its
+  checked appearance, so two tools appeared active and Eraser needed two
+  clicks to re-enable.
+- **Marker clicks above the horizon landed behind the camera.**
+  `screen_to_world_xy` accepted a negative ray parameter, returning the
+  mirrored intersection instead of no hit.
+- **A fast eraser drag erased a dotted line.** Qt delivers one move event per
+  repaint, so widely spaced samples each stamped an isolated disc. The stroke
+  is now interpolated at half the brush radius.
+- **Eraser mode swallowed every mouse button**, so the camera could not be
+  orbited or panned without toggling the eraser off. Only the left button is
+  captured now, matching crop mode.
+- **A second "Generate Map" click orphaned the first dialog**, which stayed on
+  screen with a live Save button exporting a cloud that no longer matched the
+  window. Previews are now tracked, the old one is closed, and the open dialog
+  follows the edited cloud via a new `MainWindow.cloudChanged` signal and
+  `OccupancyPreviewDialog.set_cloud`.
+- **`closeEvent` dropped the only reference to a still-queued worker**, freeing
+  the C++ `QRunnable` under the pool thread. The reference is now retained.
+- **`_ParamDialog` accepted physically impossible values** (voxel size 0,
+  negative radius, 0 RANSAC iterations) and surfaced the failure as a raw
+  traceback. Fields now carry explicit bounds.
+- **`level_ground` ignored `translate_to_zero` when the cloud was already
+  level**, so a flat scan whose floor sat at z=5 stayed at z=5.
+- **CI was red on both lint gates** — 25 `ruff check` errors and 14 of 17
+  files failing `ruff format --check`, with `build` depending on `lint`, so
+  nothing could ship through CI. Both gates now pass.
+- The test suite grew from 44 to **109 tests**, adding the coverage the audit
+  found missing: map geometry is now asserted by round-tripping an asymmetric
+  obstacle through `(pixel, origin, resolution)` (hard-coding the YAML origin
+  to (0,0,0) or deleting both vertical flips previously passed the whole
+  suite), plus the RANSAC wall case, `voxel3d` hole-freeness, non-finite and
+  oversize-grid handling, the GL blend mode, and the Qt state machine.
+
 ## [1.2.0] — 2026-06-02
 
 _Theme: Precision & hardening._
@@ -346,7 +557,8 @@ _Theme: Core engine & basic GUI._
 - **`README.md`** — installation, UI walkthrough, parameter reference,
   troubleshooting, programmatic-use snippet.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.0.0

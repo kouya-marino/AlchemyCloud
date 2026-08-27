@@ -4,18 +4,45 @@ A feature-per-version summary of the LiDAR PCD Editor & Occupancy Grid
 Exporter, from the first release to today. Newest version first. For the
 detailed, change-by-change record see [CHANGELOG.md](CHANGELOG.md).
 
-**Current version: 1.2.0**
+**Current version: 1.3.0**
 
 ---
 
-## 1.2.0 — Precision & hardening *(2026-05)*
+## 1.3.0 — Review, remediation & true colour *(2026-08-27)*
+
+- **True-colour (RGB) view** — a fourth **Color** option renders each point in
+  the colour stored in the file, with **Bright** (gamma) and **Auto-level**
+  controls, because raw indoor colour scans render close to black.
+- **Point clouds now render opaque and depth-tested** — pyqtgraph's additive
+  default made overlapping points sum to white and occlude nothing.
+- **Floor detection no longer picks walls** — RANSAC returned whichever plane
+  had the most inliers, which on a real room scan tilted the cloud 85°.
+- **Display LOD actually fills its budget** — the old voxel heuristic drew
+  1,580 of 2.2 M points; now 500,000.
+- **Honest saves** — a failed write raised nothing and reported success.
+- **Unsaved-changes prompt** on close; there was no dirty tracking at all.
+- **Separate background controls** for the binary and tristate policies, whose
+  notions of "empty" differ.
+- **Robustness** — non-finite points filtered, grid size capped, exact voxel3d
+  indexing, and a dozen smaller Qt state fixes.
+- **Logging, `sys.excepthook`, HiDPI, `--version`** and a single-sourced
+  `__version__`.
+- **Test suite 43 → 109**, adding map-geometry assertions that were entirely
+  absent.
+- **CI green for the first time** — both ruff gates had always failed.
+
+See [CHANGELOG.md](CHANGELOG.md) for the change-by-change detail.
+
+---
+
+## 1.2.0 — Precision & hardening *(2026-06-02)*
 
 - **Typed marker coordinates** — X / Y / yaw spin boxes on the Marker
   toolbar; clamped to the map scope, applied live, two-way synced with
   mouse drags and Reset.
 - **Adjustable point size** — Edit-toolbar spin box (0.5–15 px) to enlarge
   rendered points for clarity on sparse clouds.
-- **Pytest test suite** — 42 tests in `tests/` (pcd_ops, occupancy,
+- **Pytest test suite** — 43 tests in `tests/` (pcd_ops, occupancy,
   viewer projection helpers, GUI smoke) with a `tests/README.md` guide.
 - **Codebase hardening** — fixed close-during-work crash, stale occupancy
   save, main-thread freeze on reset-camera, laggy Z-Slab drags

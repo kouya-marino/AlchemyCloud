@@ -18,9 +18,18 @@ cd /home/prashant/Workspace/LiDAR_PCD_App
 pyenv exec pip install -r requirements-dev.txt
 ```
 
-This installs just `pytest>=7.0`. Everything else (Open3D, PyQt5,
-pyqtgraph, PIL, NumPy, …) is already in the project's main
-`requirements.txt`.
+This installs `pytest`, `pytest-cov` and `ruff` — the last because CI
+gates on `ruff check` **and** `ruff format --check`, so you want to be able
+to reproduce that locally. Everything else (Open3D, PyQt5, pyqtgraph, PIL,
+NumPy, …) is already in the project's main `requirements.txt`.
+
+Before pushing, run what CI runs:
+
+```bash
+ruff check alchemycloud tests
+ruff format --check alchemycloud tests
+QT_QPA_PLATFORM=offscreen pyenv exec pytest tests/ -q
+```
 
 ---
 
@@ -85,12 +94,35 @@ calls show up immediately.
 
 ## 3. What's covered
 
-The suite is split into **four files by concern**. Pure-math tests have
-no Qt dependency and run instantly; the GUI smoke tests share a single
+**109 tests across seven files**, split by concern. Pure-math tests have
+no Qt dependency and run instantly; the GUI tests share a single
 session-scoped `QApplication` (started by the `qapp` fixture) and run
 under `QT_QPA_PLATFORM=offscreen` so they don't need an X server.
 
-### 3.1 `test_pcd_ops.py` — point-cloud operations (17 tests)
+| File | Tests | Scope |
+|---|---|---|
+| `test_pcd_ops.py` | 24 | Every public `pcd_ops` function, plus floor-vs-wall RANSAC selection |
+| `test_occupancy.py` | 9 | Both policies over both methods; PGM/YAML round trip |
+| `test_occupancy_geometry.py` | 21 | Map **geometry**, `voxel3d` exactness, size guards, writer edge cases |
+| `test_viewer_helpers.py` | 5 | `project_points` / `mask_points_in_*` against identity MVPs |
+| `test_rgb_view.py` | 19 | The RGB colour mode and its tone mapping |
+| `test_regressions.py` | 21 | Audit fixes in the Qt layer, one test per named defect |
+| `test_gui_smoke.py` | 10 | `MainWindow` construction and the async pipeline |
+
+Two things worth knowing before you add tests here:
+
+- **A hang is not a failure.** `MainWindow.closeEvent` shows a modal
+  unsaved-changes prompt, and under offscreen Qt nobody answers it. Any test
+  that edits a cloud and then closes the window must set
+  `w.prompt_unsaved_on_close = False` first, or the run blocks forever
+  instead of failing.
+- **The GL paints throw and are swallowed.** Under offscreen Qt every
+  `paintGL` raises `OpenGL.error.GLError`, which pyqtgraph catches and prints.
+  Nothing is actually rendered, so these tests verify wiring and state, never
+  pixels. `test_regressions.py` asserts the scatter's GL *options* for that
+  reason — it is the closest we get to checking how the cloud is drawn.
+
+### 3.1 `test_pcd_ops.py` — point-cloud operations (24 tests)
 
 Every public function in `pcd_ops.py` is exercised against a synthetic
 cloud built by a fixture in `conftest.py`.

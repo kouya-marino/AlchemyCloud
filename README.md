@@ -4,7 +4,7 @@
 
 A desktop Python app for editing point-cloud files (`.pcd`, `.ply`, `.xyz`) and exporting **2D occupancy grids** in ROS `map_server` format (`PGM` + `YAML`).
 
-Install it with `pip install alchemycloud` and launch with the `alchemycloud` command.
+Install it with `pip install alchemycloud` and launch with the `alchemycloud` command. **Requires Python 3.10–3.12** — open3d publishes no wheel for 3.13+.
 
 Built on **Open3D** (point-cloud kernels), **pyqtgraph** + **PyOpenGL** (embedded 3D canvas), and **PyQt5** (GUI shell). All heavy work runs on a `QThreadPool` worker so the UI stays responsive and a loading spinner animates during long ops.
 
@@ -17,8 +17,8 @@ Built on **Open3D** (point-cloud kernels), **pyqtgraph** + **PyOpenGL** (embedde
 - **Statistical Outlier Removal (SOR)** — denoise. Matches PCL's `pcl_outlier_removal -method statistical`; defaults `neighbours = 30, std-ratio = 1.5`.
 - **Radius Outlier Removal** — drop points whose neighbourhood is too sparse. Matches PCL's `pcl_outlier_removal -method radius`; defaults `nb_points = 30, radius = 0.10 m`.
 - **Z-Clip (height filter)** — keep points within a Z range (great before generating a 2D map).
-- **Remove Ground (RANSAC)** — fit and strip the dominant ground plane.
-- **Level Ground** — auto-straighten a tilted scan: RANSAC fits the dominant plane, the cloud is rotated so its normal aligns with +Z, and translated so the plane lands at `z = 0`. Status bar reports the tilt that was corrected.
+- **Remove Ground (RANSAC)** — fit and strip the dominant ground plane. Only a *near-horizontal* plane is accepted: RANSAC picks the plane with the most inliers, and in an indoor scan a long wall often beats the floor, so candidates are restricted to the lowest 30 % of the Z range and any fit more than 30° from horizontal is rejected and retried.
+- **Level Ground** — auto-straighten a tilted scan: RANSAC fits the dominant *floor* plane (same near-horizontal constraint as above), the cloud is rotated so its normal aligns with +Z, and translated so the plane lands at `z = 0`. Status bar reports the tilt that was corrected. If no near-horizontal plane exists the operation is refused with an explanation rather than standing the scan on its side.
 - **Qt-native screen-space Crop** — toggle Crop mode, drag a rectangle on the canvas, with *Keep inside* / *Remove inside* modes. Math runs on the full cloud so it's exact regardless of any display-LOD.
 - **Z-Slab scope** — two horizontal planes at adjustable z_low / z_high, with in-slab points tinted red. Acts as a *scope filter*: while on, Crop and Eraser only affect in-slab points (out-of-slab points are protected).
 - **Eraser tool** — drag a circular brush over points to delete them; honours Z-Slab when active.
@@ -28,8 +28,9 @@ Built on **Open3D** (point-cloud kernels), **pyqtgraph** + **PyOpenGL** (embedde
 ### Viewer
 - **Embedded 3D canvas** inside the main window — orbit / pan / zoom; no pop-out window.
 - **Color-by-axis** (X / Y / Z, viridis colormap; default Z) — switchable from the toolbar. A **colorbar legend** in the top-right of the canvas shows the current axis, min / mid / max values (RViz-style).
+- **RGB (true colour)** — a fourth **Color** option renders the cloud's own per-point colour instead of a colormap, for files that carry an `rgb` field. Two companion controls handle exposure: **Bright** (gamma, default `0.62`) and **Auto-level** (per-channel 1–99 % stretch, default on) — indoor colour scans are usually under-exposed and render near-black raw. Set **Bright** to `1.00` with **Auto-level** off for the file's unmodified values. Both controls grey out unless Color is RGB, the colorbar hides (there's no scalar to legend), and a cloud with no colour falls back to flat grey with a status-bar note.
 - **Adjustable point size** — a **Point** spin box (0.5–15 px) on the Edit toolbar enlarges the rendered points for clarity on sparse clouds; persists across reloads and filters.
-- **Display: LOD ⟷ Full** toggle on the toolbar — voxel-downsample large clouds for fast rendering, or render every point. The full cloud is always what filters / crop / export operate on.
+- **Display: LOD ⟷ Full** toggle on the toolbar — randomly subsample large clouds to 500 k points for fast rendering, or render every point. The full cloud is always what filters / crop / export operate on.
 - **Origin marker (X/Y/Z gizmo)** with a yaw angle. Drag the marker on the XY plane (LMB) or change yaw (RMB-drag).
 - **Apply Marker as Origin** — bakes the marker pose into the cloud so Save writes the new coordinate frame.
 - **Ground-reference grid** auto-sized to each loaded cloud.
@@ -48,6 +49,8 @@ Two occupancy policies (selectable in the preview dialog):
 - **Binary** (no threshold) — a cell is occupied if enough points project into it; empty cells are FREE or UNKNOWN (configurable).
 - **Tristate** (threshold set, default) — cell **occupied** if any in-slab point has `z > threshold`; cell **free** if it has in-slab points but none above; cell **unknown** if empty. Matches the standard ROS navigation policy (threshold ≈ robot footprint height) and gives cleaner costmaps when there's floor/ceiling noise.
 
+Two separate selectors control the background, because the policies mean different things by "empty". **"Unobserved cells (tristate)"** (default *Unknown, grey*) colours cells the scan never observed, while observed floor stays FREE. **"Non-obstacle cells (binary)"** (default *Free, white*) colours every cell that is not an obstacle — binary mode has no observed/unobserved distinction, so choosing *Unknown* there greys out the navigable interior too and the exported map contains no FREE cells at all.
+
 Output is the standard ROS `map_server` format:
 - **PGM**: `0` = occupied, `254` = free, `205` = unknown.
 - **YAML**: `image`, `resolution`, `origin`, `negate`, `occupied_thresh`, `free_thresh`.
@@ -59,7 +62,11 @@ Output is the standard ROS `map_server` format:
 ### From PyPI (recommended)
 
 ```bash
-pip install alchemycloud
+pip install alchemycloud        # Python 3.10, 3.11 or 3.12
+alchemycloud                    # launch
+alchemycloud path/to/scan.pcd   # launch with a file already open
+alchemycloud --version
+alchemycloud -v                 # debug logging to stderr
 ```
 
 This installs the `alchemycloud` console command (see **Running** below).
@@ -88,7 +95,7 @@ Dependencies (declared in `pyproject.toml`, mirrored in `requirements.txt`):
 - `PyYAML>=6.0` — `map_server` YAML writer
 - `Pillow>=9.0` — PGM writer
 - `scipy>=1.10` — stable rotation alignment for **Level Ground**
-- `matplotlib>=3.7` — viridis colormap for color-by-axis and the colorbar legend
+- `matplotlib>=3.7` — viridis colormap for color-by-axis and the colorbar legend (not used by RGB mode, which reads the file's own colours)
 
 ---
 
@@ -116,7 +123,7 @@ python main.py scans.pcd      # load a PCD on startup
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ File   Edit   View                                                       │
 │ [ Voxel…  Outlier…  Z-Clip…  Ground… │ ☐ Crop [Keep inside ▼] │          │
-│   Undo  Redo  Reset │ Color: [Z▼] │ Display: LOD [●━━] Full ] ← Edit     │
+│  Undo Redo Reset │ Color:[Z▼] Bright:[0.62] ☑Auto-level │ LOD[●━]Full │
 │ [ ☐ Move Marker  Reset Marker  Apply Marker as Origin │                  │
 │   Marker: (0.000, 0.000, 0.000) θ=+0.0° ]                    ← Marker    │
 │ [ ☐ Z-Slab (scope)  low: 0.0  high: 1.0 │                                │
@@ -143,7 +150,8 @@ off entirely.
 1. **File → Open PCD…** (`Ctrl+O`). The cloud appears immediately in the
    embedded 3D canvas — no second window opens.
 2. Points are coloured by **Z** by default. Switch via the **Color** combo
-   on the Edit toolbar (X / Y / Z, viridis colormap).
+   on the Edit toolbar (X / Y / Z, viridis colormap, or **RGB** for the
+   file's own colours — see below).
 3. Apply filters in any order — the canvas updates **in place** (camera pose
    preserved). Each filter is undoable.
    - For 2D-map generation, a common pipeline is:
@@ -212,6 +220,30 @@ planes appear at `z_low` and `z_high`. Adjust the bounds with the spin
 boxes — **only in-slab points are rendered on the canvas while the scope
 is on** (out-of-slab points are hidden but still preserved in memory).
 The colorbar legend clamps to the visible range.
+
+### True-colour (RGB) view
+
+Set **Color** to **RGB** to render each point in the colour stored in the
+file rather than a height ramp. This needs an `rgb` field in the `.pcd`
+(PCL packs it as a float whose bytes are `0x00RRGGBB`) or `red`/`green`/
+`blue` properties in a `.ply`; Open3D reads both. Clouds carrying only
+`x y z`, normals, or `intensity` have no colour to show and render flat
+grey — the status bar says so when you switch.
+
+| Control | Default | Meaning |
+|---|---|---|
+| Bright | `0.62` | Display gamma. Below `1.00` brightens, above darkens. `1.00` leaves values untouched. |
+| Auto-level | on | Stretches each channel to its 1–99 % range before gamma. |
+
+The defaults exist because raw indoor colour scans are dark — a mean channel
+value near `0.5` is normal, which renders almost black. For the file's exact
+values, set **Bright** to `1.00` and switch **Auto-level** off.
+
+Tone mapping is display-only: it never touches the point data, so saving
+after cropping or filtering writes the original colours through unchanged.
+Switching RGB → Z → RGB also returns the original colours, not a re-mapped
+copy. Under **Display: LOD**, `voxel_down_sample` averages colour per voxel,
+so the view stays representative.
 
 **Z-Slab never removes points on its own.** It's a *scope filter*: while
 the toggle is on, the other editing tools only affect in-slab points:
@@ -300,7 +332,8 @@ keeps animating smoothly.
 | Z max (m) | auto | Upper bound of the slab (drops ceiling / overheads). |
 | Min points / cell | `1` | Cell becomes occupied if at least this many points fall into it. |
 | Padding (cells) | `5` | Extra cells of margin around the data footprint. |
-| Background = UNKNOWN | `false` | If unchecked, empty cells become FREE (254). If checked, empty cells become UNKNOWN (205). |
+| Unobserved cells (tristate) | `Unknown (grey)` | Colour for cells the scan never observed. Tristate only — observed floor stays FREE. |
+| Non-obstacle cells (binary) | `Free (white)` | Colour for every non-obstacle cell. Binary only; `Unknown` here greys the free space too. |
 
 The exported YAML can be consumed directly by ROS `map_server` (ROS 1) or `nav2_map_server` (ROS 2):
 
@@ -338,11 +371,13 @@ AlchemyCloud/
 ├── .github/workflows/       # ci.yml (lint+test) and publish.yml (PyPI on tag)
 ├── LICENSE                  # MIT
 ├── README.md
-├── version_data.md          # feature-per-version summary (0.1.0 → 1.2.0)
+├── version_data.md          # feature-per-version summary (0.1.0 → 1.3.0)
 └── CHANGELOG.md             # detailed version history (Keep a Changelog format)
 ```
 
-Current version: **1.2.0**. See [version_data.md](version_data.md) for a
+The version is single-sourced from `pyproject.toml` and exposed as
+`alchemycloud.__version__` (also shown in the window title and by
+`alchemycloud --version`). See [version_data.md](version_data.md) for a
 feature-per-version summary, or [CHANGELOG.md](CHANGELOG.md) for the
 detailed change-by-change history.
 
@@ -364,7 +399,7 @@ Then run all tests:
 pytest tests/ -v
 ```
 
-What's covered (43 tests, ~3 s):
+What's covered (109 tests, ~2 s):
 
 | File | Scope |
 |---|---|
@@ -372,6 +407,9 @@ What's covered (43 tests, ~3 s):
 | `tests/test_occupancy.py` | Binary + tristate policies for both `projection` and `voxel3d`; full PGM + YAML round-trip via PIL. |
 | `tests/test_viewer_helpers.py` | `project_points` / `mask_points_in_rect` / `mask_points_in_brush` against identity-MVP projections. |
 | `tests/test_gui_smoke.py` | `MainWindow` construction (toolbars present), load → filter → undo → redo pipeline, `OccupancyPreviewDialog` initial render, brush-shape combo. |
+| `tests/test_occupancy_geometry.py` | Map **geometry**: an asymmetric obstacle round-tripped through `(pixel, origin, resolution)` under both methods, PGM/YAML metadata, `voxel3d` hole-freeness, non-finite and oversize-grid handling, writer edge cases. |
+| `tests/test_rgb_view.py` | The RGB colour mode: source-colour passthrough, tone mapping, the RGB → Z → RGB round trip, toolbar gating. |
+| `tests/test_regressions.py` | Audit fixes in the Qt layer: GL blend mode, marker survival, history/dirty state, close prompt, busy gating, preview dialog staleness. |
 
 GUI tests run with `QT_QPA_PLATFORM=offscreen` (set in `conftest.py`) so
 no X server is needed. The pyqtgraph "Requires >= OpenGL 2.1" lines
@@ -386,7 +424,10 @@ reuse, and how to add new tests.
 - **"No points in the requested Z range"** when exporting the map. Widen the Z range, or skip the RANSAC ground-removal step if you over-filtered.
 - **`qt.qpa.plugin: Could not load the Qt platform plugin "xcb"`** on a headless box. The app needs a display; run it locally, or forward X11 over SSH (`ssh -X`).
 - **`pyqtgraph.opengl: Requires >= OpenGL 2.1`** when running smoke tests under `QT_QPA_PLATFORM=offscreen`. Cosmetic — the offscreen Qt context reports a stub version. On a real display the check passes.
-- **Slow load on huge clouds.** Voxel-downsample first (e.g., `0.05` m) before applying SOR or RANSAC — those are O(N). For display, the viewer also auto-LODs anything over 500 k points.
+- **Slow load on huge clouds.** Voxel-downsample first (e.g., `0.05` m) before applying SOR or RANSAC — those are O(N). For display, the viewer auto-LODs anything over 500 k points by uniform random subsampling (filters, crop and export always use the full cloud).
+- **"No near-horizontal plane found"** from Level Ground or Remove Ground. The dominant plane in the scan is a wall or ceiling, not a floor. Crop to the floor area first, or pass a larger `max_tilt_deg` if the scan really is that steep.
+- **"Grid would be N x M cells, above the 25 M limit"** on export. Either the resolution is too fine for the cloud's extent, or — if the message also mentions sensor glitches — a handful of stray returns have inflated the bounding box. Run Statistical Outlier Removal or tighten the Z range.
+- **Where are the logs?** `$XDG_STATE_HOME/alchemycloud/alchemycloud.log` on Linux (`~/.local/state/alchemycloud/` by default), `%LOCALAPPDATA%\alchemycloud\` on Windows, `~/Library/Logs/alchemycloud/` on macOS. Run with `-v` for debug output on stderr.
 - **The crop selection feels off.** The rectangle is screen-space, so the crop depends on the current camera angle. Orbit to a clean top-down or side view before drawing the box if you want predictable axis-aligned cuts.
 
 ---
