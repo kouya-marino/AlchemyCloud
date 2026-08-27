@@ -18,7 +18,7 @@ import numpy as np
 import open3d as o3d
 from PyQt5 import QtCore, QtWidgets
 
-from . import pcd_ops
+from . import __version__, pcd_ops
 from .embedded_viewer import EmbeddedViewer, mask_points_in_brush, mask_points_in_rect
 from .loading_overlay import LoadingOverlay
 from .occupancy_preview import OccupancyPreviewDialog
@@ -36,16 +36,25 @@ class _ParamDialog(QtWidgets.QDialog):
         self.setWindowTitle(title)
         self._widgets = {}
         form = QtWidgets.QFormLayout(self)
-        for label, default, kind in fields:
+        for spec in fields:
+            label, default, kind = spec[0], spec[1], spec[2]
+            # Optional 4th/5th tuple entries give an explicit (min, max). Most
+            # of these parameters are physically positive; the old blanket
+            # range of +/-1e9 let a user enter voxel_size=0 or radius=-1 and
+            # meet a raw Python traceback in a warning box.
+            lo, hi = (spec[3], spec[4]) if len(spec) >= 5 else (None, None)
             if kind == "float":
                 w = QtWidgets.QDoubleSpinBox()
                 w.setDecimals(4)
-                w.setRange(-1e9, 1e9)
+                w.setRange(-1e9 if lo is None else float(lo), 1e9 if hi is None else float(hi))
                 w.setSingleStep(0.01)
                 w.setValue(float(default))
             elif kind == "int":
                 w = QtWidgets.QSpinBox()
-                w.setRange(-10_000_000, 10_000_000)
+                w.setRange(
+                    -10_000_000 if lo is None else int(lo),
+                    10_000_000 if hi is None else int(hi),
+                )
                 w.setValue(int(default))
             elif kind.startswith("choice:"):
                 w = QtWidgets.QComboBox()
@@ -83,11 +92,22 @@ class _ParamDialog(QtWidgets.QDialog):
 # Main window
 # ---------------------------------------------------------------------------
 
+# Undo/redo entries are full deep-copied clouds: ~101 MB per snapshot on a
+# 2.2 M-point scan, so this cap is a memory bound, not a UX preference.
+HISTORY_DEPTH = 10
+
 
 class MainWindow(QtWidgets.QMainWindow):
+    # Emitted whenever `current_pcd` is replaced, so non-modal children (the
+    # occupancy preview) can follow the edit instead of holding a stale
+    # snapshot they were constructed with.
+    cloudChanged = QtCore.pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LiDAR PCD Editor & Occupancy Grid Exporter")
+        # Version in the title so a screenshot in a bug report identifies the
+        # build. Previously nothing in the UI named the product or its version.
+        self.setWindowTitle(f"AlchemyCloud {__version__} — LiDAR PCD Editor & Occupancy Grid Exporter")
         self.resize(1200, 800)
 
         self.original_pcd: o3d.geometry.PointCloud | None = None
@@ -103,8 +123,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.viewer.eraserStrokeFinished.connect(self._on_eraser_stroke)
 
         self.loading = LoadingOverlay(self.viewer)
+        # Set on every mutating operation, cleared on load and on a successful
+        # save. closeEvent prompts on it, so an hour of edits can no longer be
+        # discarded by closing the window.
+        self._dirty = False
+        # Set False by headless drivers and tests: closeEvent's unsaved-changes
+        # prompt is modal, so with nobody to answer it the close would block
+        # forever.
+        self.prompt_unsaved_on_close = True
         self._busy = False
         self._busy_worker_ref = None  # keep worker alive while running
+        # Workers whose signals we disconnected at close: held so the C++
+        # QRunnable is not freed while the pool thread may still touch it.
+        self._closing_worker_ref = None
+        # Every open preview dialog, so a second "Generate Map" click cannot
+        # orphan the first (which stayed on screen with a live Save button).
+        self._occupancy_dialogs: list[QtWidgets.QDialog] = []
         # Guards the markerMoved → spin-box → set_marker feedback loop.
         self._syncing_marker_spins = False
 
@@ -123,24 +157,36 @@ class MainWindow(QtWidgets.QMainWindow):
     # -- UI scaffolding ----------------------------------------------------
 
     def _build_menus(self):
+        """Build the menu bar.
+
+        Menu actions are kept in `self._menu_actions` because the loading
+        overlay only eats mouse events on the canvas: menus and their keyboard
+        shortcuts stayed live during a long operation, so Ctrl+O mid-RANSAC
+        could start a second job. `_refresh_state` disables them while busy.
+        """
         mbar = self.menuBar()
         m_file = mbar.addMenu("&File")
-        m_file.addAction("&Open PCD…", self.action_open, "Ctrl+O")
-        m_file.addAction("&Save PCD…", self.action_save, "Ctrl+S")
-        m_file.addAction("Save PCD As (ASCII)…", lambda: self.action_save(ascii_format=True))
-        m_file.addAction("Save as &PLY…", self.action_save_as_ply, "Ctrl+Shift+S")
+        a_open = m_file.addAction("&Open PCD…", self.action_open, "Ctrl+O")
+        a_save = m_file.addAction("&Save PCD…", self.action_save, "Ctrl+S")
+        a_save_ascii = m_file.addAction("Save PCD As (ASCII)…", lambda: self.action_save(ascii_format=True))
+        a_ply = m_file.addAction("Save as &PLY…", self.action_save_as_ply, "Ctrl+Shift+S")
         m_file.addSeparator()
-        m_file.addAction("Export &Map (PGM + YAML)…", self.action_export_map, "Ctrl+M")
+        a_map = m_file.addAction("Export &Map (PGM + YAML)…", self.action_export_map, "Ctrl+M")
         m_file.addSeparator()
         m_file.addAction("E&xit", self.close, "Ctrl+Q")
 
         m_edit = mbar.addMenu("&Edit")
-        m_edit.addAction("Undo", self.action_undo, "Ctrl+Z")
-        m_edit.addAction("Redo", self.action_redo, "Ctrl+Y")
-        m_edit.addAction("Reset to original", self.action_reset)
+        a_undo = m_edit.addAction("Undo", self.action_undo, "Ctrl+Z")
+        a_redo = m_edit.addAction("Redo", self.action_redo, "Ctrl+Y")
+        a_reset = m_edit.addAction("Reset to original", self.action_reset)
 
         m_view = mbar.addMenu("&View")
-        m_view.addAction("Reset camera", self.action_reset_camera, "Ctrl+R")
+        a_cam = m_view.addAction("Reset camera", self.action_reset_camera, "Ctrl+R")
+
+        # Disabled whenever a worker is running.
+        self._menu_actions = [a_open, a_save, a_save_ascii, a_ply, a_map, a_undo, a_redo, a_reset, a_cam]
+        # Disabled additionally when no cloud is loaded.
+        self._menu_needs_cloud = [a_save, a_save_ascii, a_ply, a_map, a_cam]
 
     def _build_toolbars(self):
         edit_tb = self.addToolBar("Edit")
@@ -183,10 +229,36 @@ class MainWindow(QtWidgets.QMainWindow):
 
         edit_tb.addWidget(QtWidgets.QLabel(" Color: "))
         self.color_combo = QtWidgets.QComboBox()
-        self.color_combo.addItems(["Z", "X", "Y"])
+        self.color_combo.addItems(["Z", "X", "Y", "RGB"])
         self.color_combo.setCurrentText("Z")
+        self.color_combo.setToolTip(
+            "Z / X / Y colour the cloud by position along that axis.\nRGB shows the file's own colours, if it has any."
+        )
         self.color_combo.currentTextChanged.connect(self.action_set_color_axis)
         edit_tb.addWidget(self.color_combo)
+
+        # RGB tone controls — only meaningful while Color is set to RGB.
+        edit_tb.addWidget(QtWidgets.QLabel(" Bright: "))
+        self.rgb_gamma_spin = QtWidgets.QDoubleSpinBox()
+        self.rgb_gamma_spin.setDecimals(2)
+        self.rgb_gamma_spin.setRange(0.20, 3.00)
+        self.rgb_gamma_spin.setSingleStep(0.05)
+        self.rgb_gamma_spin.setValue(self.viewer.rgb_gamma())
+        self.rgb_gamma_spin.setToolTip(
+            "RGB brightness (gamma). Below 1.00 brightens, above 1.00 darkens.\n"
+            "Set 1.00 with Auto-level off to see the file's colours unmodified."
+        )
+        self.rgb_gamma_spin.valueChanged.connect(self.viewer.set_rgb_gamma)
+        edit_tb.addWidget(self.rgb_gamma_spin)
+
+        self.rgb_auto_check = QtWidgets.QCheckBox("Auto-level")
+        self.rgb_auto_check.setChecked(self.viewer.rgb_autolevel())
+        self.rgb_auto_check.setToolTip(
+            "Stretch each RGB channel to its 1–99 % range before applying gamma.\n"
+            "Indoor colour scans are usually under-exposed; switch off for raw values."
+        )
+        self.rgb_auto_check.toggled.connect(self.viewer.set_rgb_autolevel)
+        edit_tb.addWidget(self.rgb_auto_check)
 
         edit_tb.addWidget(QtWidgets.QLabel(" Point: "))
         self.point_size_spin = QtWidgets.QDoubleSpinBox()
@@ -373,10 +445,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._a_eraser,
         ):
             a.setEnabled(enable_action)
+        for a in getattr(self, "_menu_actions", []):
+            a.setEnabled(not self._busy)
+        for a in getattr(self, "_menu_needs_cloud", []):
+            a.setEnabled(enable_action)
         self._a_undo.setEnabled(bool(self.history) and not self._busy)
         self._a_redo.setEnabled(bool(self.redo_stack) and not self._busy)
         self._a_reset.setEnabled(has and self.original_pcd is not None and not self._busy)
         self.color_combo.setEnabled(enable_action)
+        # The RGB tone controls do nothing outside RGB mode — gate them on it
+        # so the toolbar shows which knobs are actually live.
+        rgb_mode = self.color_combo.currentText() == "RGB"
+        self.rgb_gamma_spin.setEnabled(enable_action and rgb_mode)
+        self.rgb_auto_check.setEnabled(enable_action and rgb_mode)
         self.point_size_spin.setEnabled(enable_action)
         self.crop_mode_combo.setEnabled(enable_action)
         self.display_switch.setEnabled(enable_action)
@@ -394,10 +475,23 @@ class MainWindow(QtWidgets.QMainWindow):
             s = pcd_ops.stats(self.current_pcd)
             self.stats_label.setText(s.describe())
             # Clamp the X/Y coordinate boxes to the cloud scope, expanded to
-            # always include 0.0 so the default origin marker is representable.
+            # always include 0.0 (so the default origin marker is
+            # representable) and the marker's *current* position. Without the
+            # latter, a marker placed outside the cloud bbox — legitimate, e.g.
+            # a robot start pose just outside the scanned area — was pulled
+            # inside the moment setRange ran, so editing yaw alone teleported it.
+            mx, my, _ = self.viewer.marker_position()
             for spin, lo, hi in (
-                (self.marker_x_spin, min(float(s.min_bound[0]), 0.0), max(float(s.max_bound[0]), 0.0)),
-                (self.marker_y_spin, min(float(s.min_bound[1]), 0.0), max(float(s.max_bound[1]), 0.0)),
+                (
+                    self.marker_x_spin,
+                    min(float(s.min_bound[0]), 0.0, mx),
+                    max(float(s.max_bound[0]), 0.0, mx),
+                ),
+                (
+                    self.marker_y_spin,
+                    min(float(s.min_bound[1]), 0.0, my),
+                    max(float(s.max_bound[1]), 0.0, my),
+                ),
             ):
                 spin.blockSignals(True)
                 spin.setRange(lo, hi)
@@ -414,19 +508,27 @@ class MainWindow(QtWidgets.QMainWindow):
             self.viewer.set_eraser_mode(False)
         self.path_label.setText(self.current_path or "No PCD loaded")
 
+    def _reset_undo_stacks(self) -> None:
+        """Clear both stacks. Loading a file used to clear only `history`, so
+        Redo stayed enabled and popped a cloud belonging to the *previous* file
+        straight into `current_pcd` — while `current_path` still named the new
+        one, so Ctrl+S then wrote the old cloud under the new file's name."""
+        self.history.clear()
+        self.redo_stack.clear()
+
     def _push_history(self, clear_redo: bool = True):
         if self.current_pcd is not None:
             self.history.append(copy.deepcopy(self.current_pcd))
-            if len(self.history) > 10:
-                self.history = self.history[-10:]
+            if len(self.history) > HISTORY_DEPTH:
+                self.history = self.history[-HISTORY_DEPTH:]
         if clear_redo:
             self.redo_stack.clear()
 
     def _push_redo(self):
         if self.current_pcd is not None:
             self.redo_stack.append(copy.deepcopy(self.current_pcd))
-            if len(self.redo_stack) > 10:
-                self.redo_stack = self.redo_stack[-10:]
+            if len(self.redo_stack) > HISTORY_DEPTH:
+                self.redo_stack = self.redo_stack[-HISTORY_DEPTH:]
 
     def _warn(self, title: str, msg: str):
         QtWidgets.QMessageBox.warning(self, title, msg)
@@ -464,6 +566,7 @@ class MainWindow(QtWidgets.QMainWindow):
         message: str | None = None,
         reset_view: bool = False,
         on_extra=None,
+        reset_marker: bool = False,
     ):
         """Run `work_fn` -> new_pcd on a worker, pre-compute display arrays,
         then route through the standard apply/history pipeline on the main
@@ -497,16 +600,59 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self._push_history()
             self.current_pcd = new_pcd
+            self._dirty = True
+            self.cloudChanged.emit(new_pcd)
             self.statusBar().showMessage(f"{label}: now {len(new_pcd.points):,} points", 5000)
             self._refresh_state()
             display, pts, rgba = prepared
-            self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=reset_view)
+            self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=reset_view, reset_marker=reset_marker)
             if on_extra is not None and extra is not None:
                 on_extra(*extra)
 
         self._run_async(wrapped, on_success, message or f"{label}…", error_title=f"{label} failed")
 
+    def _forget_occupancy_dialog(self, dlg) -> None:
+        if dlg in self._occupancy_dialogs:
+            self._occupancy_dialogs.remove(dlg)
+
+    def _on_saved(self, saved_path: str, prefix: str) -> None:
+        self._dirty = False
+        self.statusBar().showMessage(f"{prefix} {saved_path}", 5000)
+
     def closeEvent(self, event):
+        # Unsaved edits: ask before throwing them away. There was previously no
+        # dirty tracking at all, so an hour of filtering and cropping vanished
+        # on close with no prompt.
+        if self._dirty and self.prompt_unsaved_on_close and self.current_pcd is not None:
+            choice = QtWidgets.QMessageBox.warning(
+                self,
+                "Unsaved changes",
+                "This cloud has unsaved edits. Save before closing?",
+                QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Save,
+            )
+            if choice == QtWidgets.QMessageBox.Cancel:
+                event.ignore()
+                return
+            if choice == QtWidgets.QMessageBox.Save:
+                self.action_save()
+                # action_save runs on a worker, so the write is still in flight.
+                # Refuse the close and let the user try again once it lands
+                # rather than racing teardown against the file write.
+                if self._busy:
+                    self.statusBar().showMessage("Saving… close again once the save completes.", 6000)
+                    event.ignore()
+                    return
+                if self._dirty:  # dialog cancelled or save failed
+                    event.ignore()
+                    return
+
+        # Close any child preview dialogs first so their timers and workers stop
+        # before this window is torn down.
+        for dlg in list(self._occupancy_dialogs):
+            dlg.close()
+        self._occupancy_dialogs.clear()
+
         # If a worker is still running, disconnect its signals so its queued
         # success / error / finished deliveries don't fire into a destroyed
         # window. The worker thread runs to completion in the background; we
@@ -519,12 +665,18 @@ class MainWindow(QtWidgets.QMainWindow):
                     sig.disconnect()
                 except (TypeError, RuntimeError):
                     pass  # already disconnected or wrapper gone
+            # Keep the reference alive until the pool thread is done with the
+            # C++ QRunnable: dropping the last Python ref while the task is
+            # still queued frees it under the pool and segfaults.
+            self._closing_worker_ref = w
             self._busy_worker_ref = None
         super().closeEvent(event)
 
     # -- file actions ------------------------------------------------------
 
     def action_open(self):
+        if self._busy:
+            return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open PCD", "", "Point clouds (*.pcd *.ply *.xyz);;All files (*)"
         )
@@ -546,9 +698,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.original_pcd = copy.deepcopy(pcd)
             self.current_pcd = pcd
             self.current_path = path
-            self.history.clear()
+            self.cloudChanged.emit(pcd)
+            self._reset_undo_stacks()
+            self._dirty = False
             self._refresh_state()
-            self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True)
+            # A new file is a new frame of reference, so the marker resets here
+            # (and only here, plus after Apply Marker).
+            self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True, reset_marker=True)
+            dropped = pcd_ops.non_finite_count(path)
+            if dropped:
+                self.statusBar().showMessage(
+                    f"Loaded {len(pcd.points):,} points — dropped {dropped:,} non-finite (NaN/inf) point(s).",
+                    8000,
+                )
 
         self._run_async(
             work,
@@ -569,7 +731,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pcd = self.current_pcd
         self._run_async(
             lambda: (pcd_ops.save_pcd(pcd, path, ascii_format=ascii_format), path)[1],
-            on_success=lambda saved: self.statusBar().showMessage(f"Saved to {saved}", 5000),
+            on_success=lambda saved: self._on_saved(saved, "Saved to"),
             message=f"Saving {os.path.basename(path)}…",
             error_title="Save failed",
         )
@@ -594,7 +756,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pcd = self.current_pcd
         self._run_async(
             lambda: (pcd_ops.save_pcd(pcd, path, ascii_format=False), path)[1],
-            on_success=lambda saved: self.statusBar().showMessage(f"Saved PLY → {saved}", 5000),
+            on_success=lambda saved: self._on_saved(saved, "Saved PLY →"),
             message=f"Saving {os.path.basename(path)}…",
             error_title="Save as PLY failed",
         )
@@ -618,7 +780,20 @@ class MainWindow(QtWidgets.QMainWindow):
     def action_set_color_axis(self, axis_label: str):
         axis = axis_label.lower()
         self.viewer.set_color_axis(axis)
-        self.statusBar().showMessage(f"Color axis → {axis.upper()}", 3000)
+        self._refresh_state()
+        if axis != "rgb":
+            self.statusBar().showMessage(f"Color axis → {axis.upper()}", 3000)
+        elif self.viewer.has_source_colors():
+            self.statusBar().showMessage(
+                "Colour → RGB (the file's own colours). Use Bright / Auto-level to expose them.",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage(
+                "Colour → RGB, but this cloud has no colour — showing flat grey. "
+                "Colour needs an 'rgb' field in the .pcd / .ply.",
+                6000,
+            )
 
     def _update_lod_label_styles(self, full_on: bool) -> None:
         active = "color: #e8e8e8; font-weight: bold;"
@@ -663,8 +838,12 @@ class MainWindow(QtWidgets.QMainWindow):
         on = self._a_crop.isChecked()
         self.viewer.set_crop_mode(on)
         if on:
+            # set_crop_mode already clears eraser state inside the viewer, but
+            # the button kept its checked look — so the toolbar showed two
+            # active tools and Eraser needed two clicks to come back.
             self._a_marker.setChecked(False)
             self.viewer.set_marker_mode(False)
+            self._a_eraser.setChecked(False)
             self.statusBar().showMessage(
                 "Crop mode: drag a rectangle on the canvas. Escape via the toolbar toggle.",
                 0,
@@ -680,6 +859,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if on:
             self._a_crop.setChecked(False)
             self.viewer.set_crop_mode(False)
+            self._a_eraser.setChecked(False)
             self.statusBar().showMessage(
                 "Marker mode: LMB-drag → move on XY plane, RMB-drag horizontally → yaw angle.",
                 0,
@@ -703,6 +883,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Apply marker as origin",
             lambda: pcd_ops.transform_to_marker_frame(cur, pos, yaw),
             message="Re-framing cloud to marker…",
+            reset_marker=True,  # the marker *became* the origin
         )
 
     def _on_marker_coord_entered(self, _value=None):
@@ -838,8 +1019,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         cur = self.current_pcd
         slab_on = self._a_zslab.isChecked()
-        z_low = float(self.slab_low_spin.value())
-        z_high = float(self.slab_high_spin.value())
+        # Ask the viewer, not the spin boxes: it is the component that
+        # normalises an inverted low/high pair, and the scope filter must match
+        # the slab the user can actually see.
+        z_low, z_high = self.viewer.slab_bounds()
 
         def work():
             pts_w = np.asarray(cur.points)
@@ -860,8 +1043,7 @@ class MainWindow(QtWidgets.QMainWindow):
         w, h = self.viewer.width(), self.viewer.height()
         mode = self.crop_mode_combo.currentText()
         slab_on = self._a_zslab.isChecked()
-        z_low = float(self.slab_low_spin.value())
-        z_high = float(self.slab_high_spin.value())
+        z_low, z_high = self.viewer.slab_bounds()
         label = "Crop (keep)" if mode == "Keep inside" else "Crop (remove)"
         if slab_on:
             label += " · slab"
@@ -896,7 +1078,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def action_voxel(self):
         if self.current_pcd is None or self._busy:
             return
-        dlg = _ParamDialog("Voxel Downsample", [("Voxel size (m)", 0.05, "float")], self)
+        dlg = _ParamDialog(
+            "Voxel Downsample",
+            [("Voxel size (m)", 0.05, "float", 0.0001, 100.0)],
+            self,
+        )
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return
         v = dlg.values()
@@ -912,7 +1098,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         dlg = _ParamDialog(
             "Statistical Outlier Removal",
-            [("Neighbors", 30, "int"), ("Std ratio", 1.5, "float")],
+            [("Neighbors", 30, "int", 1, 10_000), ("Std ratio", 1.5, "float", 0.0001, 100.0)],
             self,
         )
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
@@ -930,7 +1116,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         dlg = _ParamDialog(
             "Radius Outlier Removal",
-            [("Min points in radius", 30, "int"), ("Radius (m)", 0.10, "float")],
+            [("Min points in radius", 30, "int", 1, 10_000), ("Radius (m)", 0.10, "float", 0.0001, 100.0)],
             self,
         )
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
@@ -967,7 +1153,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         dlg = _ParamDialog(
             "Remove Ground (RANSAC)",
-            [("Distance threshold (m)", 0.05, "float"), ("Iterations", 1000, "int")],
+            [("Distance threshold (m)", 0.05, "float", 0.0001, 10.0), ("Iterations", 1000, "int", 10, 100_000)],
             self,
         )
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
@@ -1020,6 +1206,8 @@ class MainWindow(QtWidgets.QMainWindow):
         def on_success(prepared):
             display, pts, rgba = prepared
             self.current_pcd = prev
+            self._dirty = True
+            self.cloudChanged.emit(prev)
             self.statusBar().showMessage("Undo", 3000)
             self._refresh_state()
             self.viewer.apply_prepared_cloud(display, pts, rgba)
@@ -1041,6 +1229,8 @@ class MainWindow(QtWidgets.QMainWindow):
         def on_success(prepared):
             display, pts, rgba = prepared
             self.current_pcd = nxt
+            self._dirty = True
+            self.cloudChanged.emit(nxt)
             self.statusBar().showMessage("Redo", 3000)
             self._refresh_state()
             self.viewer.apply_prepared_cloud(display, pts, rgba)
@@ -1059,6 +1249,8 @@ class MainWindow(QtWidgets.QMainWindow):
         def on_success(prepared):
             display, pts, rgba = prepared
             self.current_pcd = clone
+            self._dirty = True
+            self.cloudChanged.emit(clone)
             self.statusBar().showMessage("Reset to original", 3000)
             self._refresh_state()
             self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True)
@@ -1071,8 +1263,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.current_pcd is None or self._busy:
             return
         default_path = os.path.splitext(self.current_path or "map.pgm")[0] + "_map.pgm"
+        # Close any previous preview first. Reassigning a single attribute
+        # left the old dialog visible with a live Save button, exporting a cloud
+        # that no longer matched the window.
+        for old in list(self._occupancy_dialogs):
+            old.close()
+        self._occupancy_dialogs.clear()
+
         dlg = OccupancyPreviewDialog(self.current_pcd, default_save_path=default_path, parent=self)
         dlg.setModal(False)
+        # The dialog is non-modal, so the cloud can change under it. Feed it the
+        # new cloud instead of letting it export the snapshot it was born with.
+        self.cloudChanged.connect(dlg.set_cloud)
+        dlg.destroyed.connect(lambda *_, d=dlg: self._forget_occupancy_dialog(d))
         dlg.show()
-        # Keep a reference so the dialog isn't garbage-collected.
-        self._occupancy_dialog = dlg
+        self._occupancy_dialogs.append(dlg)

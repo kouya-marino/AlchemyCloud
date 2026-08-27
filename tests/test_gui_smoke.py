@@ -51,6 +51,7 @@ def test_main_window_constructs(qapp):
     # Color combo defaults to Z, display LOD switch is off (= LOD on).
     assert w.color_combo.currentText() == "Z"
     assert not w.display_switch.isChecked()
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -67,6 +68,7 @@ def test_load_path_populates_state(qapp, busy_wait, cube_cloud, tmp_path):
     assert busy_wait(lambda: not w._busy and w.current_pcd is not None, timeout_s=5.0)
     assert len(w.current_pcd.points) == len(cube_cloud.points)
     assert w.current_path == path
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -82,6 +84,7 @@ def test_apply_filter_updates_history(qapp, busy_wait, cube_cloud):
     assert len(w.history) == 1
     # Cloud should now have fewer points.
     assert len(w.current_pcd.points) < len(cube_cloud.points)
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -104,6 +107,7 @@ def test_undo_redo_round_trip(qapp, busy_wait, cube_cloud):
     w.action_redo()
     assert busy_wait(lambda: not w._busy, timeout_s=5.0)
     assert len(w.current_pcd.points) == n_after
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -126,6 +130,7 @@ def test_occupancy_preview_renders_initial_grid(qapp, busy_wait, floor_with_chai
     assert dlg._last_params.height_threshold is not None
     assert dlg._last_grid.image.size > 0
     dlg.close()
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -140,6 +145,7 @@ def test_marker_coord_entry_moves_marker(qapp, cube_cloud):
     assert abs(px - 0.5) < 1e-6
     assert abs(py - (-0.25)) < 1e-6
     assert abs(w.viewer.marker_yaw_degrees() - 45.0) < 1e-6
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -159,6 +165,7 @@ def test_marker_drag_syncs_back_to_spins(qapp, cube_cloud):
     assert abs(w.marker_x_spin.value()) < 1e-6
     assert abs(w.marker_y_spin.value()) < 1e-6
     assert abs(w.marker_yaw_spin.value()) < 1e-6
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -173,6 +180,7 @@ def test_marker_spin_ranges_clamp_to_cloud_scope(qapp, cube_cloud):
     # Yaw is a fixed ±180 range.
     assert w.marker_yaw_spin.minimum() == -180.0
     assert w.marker_yaw_spin.maximum() == 180.0
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -197,6 +205,7 @@ def test_point_size_spin_updates_viewer(qapp, cube_cloud):
         time.sleep(0.02)
     assert w.viewer.point_size() == 6.0
     assert w.viewer._scatter.size == 6.0
+    w.prompt_unsaved_on_close = False
     w.close()
 
 
@@ -211,4 +220,5 @@ def test_brush_shape_combo_mirrors_viewer(qapp, cube_cloud):
     qapp.processEvents()
     assert w.viewer.brush_shape() == "square"
     assert not w.eraser_aspect_spin.isEnabled()
+    w.prompt_unsaved_on_close = False
     w.close()
