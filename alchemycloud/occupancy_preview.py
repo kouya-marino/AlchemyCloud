@@ -42,6 +42,8 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         self._dirty = False  # request landed while we were busy
         self._last_grid: occupancy.OccupancyGrid | None = None
         self._last_params: occupancy.GridParams | None = None
+        self._last_error: str | None = None
+        self._save_pending = False
         self._worker_ref = None
 
         s = pcd_ops.stats(pcd)
@@ -133,10 +135,32 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         self.padding_spin.valueChanged.connect(self._schedule)
         form.addRow("Padding (cells)", self.padding_spin)
 
-        self.unknown_check = QtWidgets.QCheckBox("Empty cells = UNKNOWN (binary mode only)")
-        self.unknown_check.setChecked(False)
-        self.unknown_check.toggled.connect(self._schedule)
-        form.addRow("", self.unknown_check)
+        # Two separate controls, because the two policies mean different things
+        # by "empty". In tristate it is *never observed* (observed floor stays
+        # FREE), so grey is the sensible default. In binary every non-occupied
+        # cell is empty, so grey there paints the navigable interior too and the
+        # map ends up with zero FREE cells — which is why this one defaults to
+        # Free and matches `GridParams.unknown_outside_footprint=False`.
+        self.tristate_bg_combo = QtWidgets.QComboBox()
+        self.tristate_bg_combo.addItems(["Unknown (grey)", "Free (white)"])
+        self.tristate_bg_combo.setCurrentIndex(0)
+        self.tristate_bg_combo.setToolTip(
+            "Colour for cells the scan never observed. Only the tristate policy "
+            "can tell observed-and-empty from never-observed."
+        )
+        self.tristate_bg_combo.currentIndexChanged.connect(self._schedule)
+        form.addRow("Unobserved cells (tristate)", self.tristate_bg_combo)
+
+        self.binary_bg_combo = QtWidgets.QComboBox()
+        self.binary_bg_combo.addItems(["Free (white)", "Unknown (grey)"])
+        self.binary_bg_combo.setCurrentIndex(0)
+        self.binary_bg_combo.setToolTip(
+            "Colour for every cell that is not an obstacle. Binary mode has no "
+            "observed/unobserved distinction, so 'Unknown' greys out the free "
+            "space too and the exported map contains no FREE cells at all."
+        )
+        self.binary_bg_combo.currentIndexChanged.connect(self._schedule)
+        form.addRow("Non-obstacle cells (binary)", self.binary_bg_combo)
 
         btn_row = QtWidgets.QHBoxLayout()
         self.save_btn = QtWidgets.QPushButton("Save…")
@@ -161,10 +185,13 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         self.preview_label.setMinimumSize(480, 360)
         self.preview_label.setStyleSheet("background: #15171c; color: #888; border: 1px solid #2a2d34;")
         pv.addWidget(self.preview_label, 1)
+        # Swatches must match the rendered PGM: occupied is 0 (black), free is
+        # 254 (white), unknown is 205 (light grey). They were previously the
+        # other way round, so the key contradicted the image beside it.
         legend = QtWidgets.QLabel(
-            "<span style='color:#000;background:#fff;padding:0 4px;'>occ</span>  "
-            "<span style='color:#000;background:#dddddd;padding:0 4px;'>free</span>  "
-            "<span style='color:#fff;background:#444;padding:0 4px;'>unknown</span>"
+            "<span style='color:#fff;background:#000;padding:0 4px;'>occ&nbsp;0</span>  "
+            "<span style='color:#000;background:#fefefe;padding:0 4px;'>free&nbsp;254</span>  "
+            "<span style='color:#000;background:#cdcdcd;padding:0 4px;'>unknown&nbsp;205</span>"
         )
         legend.setAlignment(QtCore.Qt.AlignCenter)
         pv.addWidget(legend)
@@ -176,9 +203,34 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
 
     # -- state helpers -----------------------------------------------------
 
+    def set_cloud(self, pcd) -> None:
+        """Point the dialog at a new cloud and re-render.
+
+        The dialog is non-modal, so the main window stays editable while it is
+        open. It used to hold the cloud it was constructed with forever, so
+        applying a Z-clip and then hitting Save exported the pre-clip map.
+        MainWindow connects its `cloudChanged` signal here.
+        """
+        if pcd is None or len(pcd.points) == 0:
+            return
+        self._pcd = pcd
+        self._last_grid = None
+        self._last_params = None
+        self._last_error = None
+        self.status_label.setText("Cloud changed — rebuilding preview…")
+        self._schedule()
+
+    def closeEvent(self, event):
+        """Stop the debounce timer and drop any pending save before teardown."""
+        self._debounce.stop()
+        self._save_pending = False
+        self._dirty = False
+        super().closeEvent(event)
+
     def _on_tristate_toggled(self, on: bool):
         self.threshold_spin.setEnabled(on)
-        self.unknown_check.setEnabled(not on)
+        self.tristate_bg_combo.setEnabled(on)
+        self.binary_bg_combo.setEnabled(not on)
         self._schedule()
 
     def _schedule(self, *_):
@@ -190,15 +242,19 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         z_hi = float(self.zmax_spin.value())
         if z_hi <= z_lo:
             z_hi = z_lo + 1e-3
+        tristate = self.tristate_check.isChecked()
         return occupancy.GridParams(
             resolution=float(self.resolution_spin.value()),
             z_min=z_lo,
             z_max=z_hi,
             method=self.method_combo.currentText(),
             min_points_per_cell=int(self.min_pts_spin.value()),
-            unknown_outside_footprint=self.unknown_check.isChecked() and not self.tristate_check.isChecked(),
+            # index 1 == "Unknown (grey)" for the binary combo
+            unknown_outside_footprint=self.binary_bg_combo.currentIndex() == 1,
+            # index 0 == "Unknown (grey)" for the tristate combo
+            tristate_empty_unknown=self.tristate_bg_combo.currentIndex() == 0,
             padding_cells=int(self.padding_spin.value()),
-            height_threshold=(float(self.threshold_spin.value()) if self.tristate_check.isChecked() else None),
+            height_threshold=float(self.threshold_spin.value()) if tristate else None,
         )
 
     # -- preview rebuild ---------------------------------------------------
@@ -220,10 +276,16 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
             grid, used = result
             self._last_grid = grid
             self._last_params = used
+            self._last_error = None
             self._update_preview_pixmap(grid)
             self._update_status(grid)
 
         def on_error(msg: str):
+            # Keep the failure on record. `_do_save` refuses to write while this
+            # is set: previously a failed rebuild left `_last_grid` holding the
+            # *previous* successful render, and the pending-save path then wrote
+            # that stale grid and reported "Saved".
+            self._last_error = msg
             self.status_label.setText(f"<span style='color:#d66;'>Build failed: {msg.splitlines()[0]}</span>")
             self.preview_label.setText("error")
 
@@ -234,6 +296,15 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
                 self._dirty = False
                 # Re-render with the latest parameters.
                 QtCore.QTimer.singleShot(0, self._render_preview)
+            elif self._save_pending:
+                self._save_pending = False
+                if self._last_error is None:
+                    self._do_save()
+                else:
+                    self.status_label.setText(
+                        "<span style='color:#d66;'>Not saved — the current parameters "
+                        "do not produce a grid. Fix them and try again.</span>"
+                    )
 
         self._worker_ref = run_async(work, on_success=on_success, on_error=on_error, on_finished=on_finished)
 
@@ -259,21 +330,22 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
     # -- save --------------------------------------------------------------
 
     def _on_save(self):
-        """Save click. If a parameter change is still pending (debounce
-        timer running, or worker mid-build), flush it through first so the
-        saved grid corresponds to the *current* spin values — not whatever
-        the previous render produced."""
-        if self._debounce.isActive() or self._busy:
-            self._debounce.stop()
-            self._render_preview()
-            self.status_label.setText("Building latest preview before saving…")
-            QtCore.QTimer.singleShot(50, self._on_save_when_ready)
-            return
-        self._do_save()
+        """Save click. If a parameter change is still pending (debounce timer
+        running, or a worker mid-build), flush it first so the saved grid
+        matches the *current* spin values.
 
-    def _on_save_when_ready(self):
+        Implemented as a flag consumed by the render's `on_finished` rather than
+        a self-rescheduling timer. The old 50 ms polling chain kept firing after
+        the dialog was closed — eventually popping a file dialog and writing a
+        file from a dead window — and had no way to tell a successful flush from
+        a failed one.
+        """
         if self._debounce.isActive() or self._busy:
-            QtCore.QTimer.singleShot(50, self._on_save_when_ready)
+            self._save_pending = True
+            self._debounce.stop()
+            self.status_label.setText("Building latest preview before saving…")
+            if not self._busy:
+                self._render_preview()
             return
         self._do_save()
 
@@ -281,13 +353,27 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         if self._last_grid is None or self._last_params is None:
             self.status_label.setText("Nothing to save yet — preview still building.")
             return
+        if self._last_error is not None:
+            self.status_label.setText(
+                "<span style='color:#d66;'>Not saved — the last build failed, so the "
+                "only grid available is out of date.</span>"
+            )
+            return
         default = self._default_save_path or "map.pgm"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save map (PGM)", default, "PGM image (*.pgm);;All files (*)"
         )
         if not path:
             return
-        pgm_path, yaml_path = occupancy.save(self._last_grid, path, self._last_params)
+        try:
+            pgm_path, yaml_path = occupancy.save(self._last_grid, path, self._last_params)
+        except Exception as exc:
+            # This runs on the main thread, so Worker's error plumbing does not
+            # apply: an unwritable path used to raise straight out of the slot,
+            # print a traceback nobody sees, and leave the old stats on screen.
+            QtWidgets.QMessageBox.warning(self, "Export failed", f"{type(exc).__name__}: {exc}")
+            self.status_label.setText(f"<span style='color:#d66;'>Export failed: {exc}</span>")
+            return
         self.status_label.setText(f"Saved {os.path.basename(str(pgm_path))} + {os.path.basename(str(yaml_path))}")
 
     # -- resize: rescale the preview pixmap --------------------------------
