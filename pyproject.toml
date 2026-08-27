@@ -8,7 +8,9 @@ version = "1.2.0"
 description = "Desktop GUI for editing LiDAR point clouds and exporting ROS occupancy/cost maps"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+# Upper bound is real: open3d 0.19 publishes cp38-cp312 wheels and no sdist,
+# so `pip install alchemycloud` cannot resolve on 3.13+.
+requires-python = ">=3.10,<3.13"
 authors = [
     {name = "Prashant Rawat", email = "prashantrawatmailbox@gmail.com"},
 ]
@@ -20,6 +22,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: GIS",
     "Topic :: Scientific/Engineering :: Visualization",
     "Topic :: Scientific/Engineering :: Image Processing",

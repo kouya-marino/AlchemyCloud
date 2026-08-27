@@ -1,4 +1,9 @@
 # Development-only dependencies. Install with:
 #   pyenv exec pip install -r requirements-dev.txt
 # Production deps stay in requirements.txt.
+#
+# Kept in step with pyproject.toml's [project.optional-dependencies] dev extra —
+# CI gates on ruff, so it belongs here too.
 pytest>=7.0
+pytest-cov>=4.0
+ruff>=0.4.0
