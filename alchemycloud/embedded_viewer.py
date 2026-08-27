@@ -116,8 +116,10 @@ class _CropOverlay(QtWidgets.QWidget):
 
 class EmbeddedViewer(gl.GLViewWidget):
     """In-window 3D viewer. Use `set_cloud(pcd)` to display a cloud and
-    `set_color_axis('x'|'y'|'z')` to recolor. Emits `cropRequested(QRect)`
-    when the user finishes a drag in crop mode."""
+    `set_color_axis('x'|'y'|'z'|'rgb')` to recolor — 'rgb' shows the cloud's
+    own colours (tone-mapped via `set_rgb_gamma` / `set_rgb_autolevel`) rather
+    than a colormap. Emits `cropRequested(QRect)` when the user finishes a
+    drag in crop mode."""
 
     cropRequested = QtCore.pyqtSignal(QtCore.QRect)
     # x, y, z, yaw_degrees
@@ -141,6 +143,14 @@ class EmbeddedViewer(gl.GLViewWidget):
             color=np.zeros((0, 4), dtype=np.float32),
             size=self._point_size,
             pxMode=True,
+            # pyqtgraph defaults GLScatterPlotItem to 'additive', which means
+            # GL_DEPTH_TEST off and glBlendFunc(SRC_ALPHA, ONE): overlapping
+            # points SUM instead of occluding. Dense regions blow past white
+            # (measured ~7 % of lit pixels on a 178 k-point room scan, up to 29
+            # points landing on one pixel) and nothing hides anything, so the
+            # cloud reads as haze rather than surfaces. Points here are fully
+            # opaque, so depth-test them properly.
+            glOptions="opaque",
         )
         self.addItem(self._scatter)
 
@@ -176,6 +186,21 @@ class EmbeddedViewer(gl.GLViewWidget):
         self._color_axis = "z"
         self._display_lod_enabled = True
         self._display_pcd: o3d.geometry.PointCloud | None = None
+        # The display cloud's *own* RGB, captured before colorize_by_axis
+        # overwrites it. None when the source cloud carries no colour. Without
+        # this, switching RGB -> Z -> RGB would come back viridis, because
+        # colorize_by_axis mutates `_display_pcd.colors` in place.
+        # `_pending_src_rgb` is written by prepare_cloud (worker thread) and
+        # promoted in apply_prepared_cloud (main thread), so the cached colours
+        # can never belong to a different cloud than `_display_pcd`.
+        self._source_rgb: np.ndarray | None = None
+        self._pending_src_rgb: np.ndarray | None = None
+        # RGB display tone mapping. Indoor colour scans are typically very
+        # under-exposed -- a mean channel value around 0.5 is normal -- so raw
+        # values render close to black. Auto-level stretches each channel to
+        # its 1-99 % range; gamma below 1.0 then lifts the midtones.
+        self._rgb_gamma = 0.62
+        self._rgb_autolevel = True
         # Cached per-point arrays for the *current* display cloud + axis.
         # Slab bound changes can then just slice these without re-running
         # the matplotlib colormap on every spin tick.
@@ -242,6 +267,8 @@ class EmbeddedViewer(gl.GLViewWidget):
 
     def clear_cloud(self) -> None:
         self._display_pcd = None
+        self._source_rgb = None
+        self._pending_src_rgb = None
         self._cached_pts = None
         self._cached_rgba = None
         self._cached_xy_bbox = None
@@ -258,6 +285,11 @@ class EmbeddedViewer(gl.GLViewWidget):
         to in-slab points so the legend matches what's actually rendered.
         Reads from the cached float32 pts to avoid re-materialising
         Open3D's Vector3dVector each call."""
+        if self._color_axis == "rgb":
+            # The colourbar maps a scalar axis to a colormap; in RGB mode the
+            # colour carries no scalar, so there is nothing to legend.
+            self._legend.hide_legend()
+            return
         if self._cached_pts is None:
             self._rebuild_color_cache()
         if self._cached_pts is None or len(self._cached_pts) == 0:
@@ -298,12 +330,46 @@ class EmbeddedViewer(gl.GLViewWidget):
             self._scatter.setData(size=self._point_size)
             self.update()
 
+    def _tone_map(self, cols: np.ndarray) -> np.ndarray:
+        """Apply auto-level + gamma to source RGB for display.
+
+        Raw indoor colour clouds are usually under-exposed and render close to
+        black, so the defaults lift them. `auto_level=False, gamma=1.0` renders
+        the file's colours completely unmodified.
+        """
+        out = np.clip(np.asarray(cols, dtype=np.float32), 0.0, 1.0)
+        if self._rgb_autolevel and len(out) > 1:
+            lo = np.percentile(out, 1.0, axis=0)
+            hi = np.percentile(out, 99.0, axis=0)
+            out = np.clip((out - lo) / np.maximum(hi - lo, 1e-6), 0.0, 1.0)
+        gamma = float(self._rgb_gamma)
+        if abs(gamma - 1.0) > 1e-6:
+            out = out**gamma
+        return out
+
+    def _resolve_colors(self, display: o3d.geometry.PointCloud, src_rgb: np.ndarray | None, n: int) -> np.ndarray:
+        """RGBA colour block for `n` points under the current colour mode.
+
+        In "rgb" mode this is the cloud's own colour, tone-mapped; a cloud with
+        no colour falls back to flat grey. In an axis mode it is whatever
+        `colorize_by_axis` just wrote.
+        """
+        if self._color_axis == "rgb":
+            if src_rgb is None or src_rgb.size == 0 or len(src_rgb) != n:
+                return np.full((n, 3), 0.6, dtype=np.float32)
+            return self._tone_map(src_rgb)
+        cols = np.asarray(display.colors, dtype=np.float32)
+        if cols.size and len(cols) == n:
+            return cols
+        return np.full((n, 3), 0.6, dtype=np.float32)
+
     def prepare_cloud(
         self, pcd: o3d.geometry.PointCloud
     ) -> tuple[o3d.geometry.PointCloud | None, np.ndarray, np.ndarray]:
         """Compute the display clone + RGBA arrays. Safe to call from a
         worker thread — touches no Qt or GL state."""
         if pcd is None or len(pcd.points) == 0:
+            self._pending_src_rgb = None
             return None, np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
 
         if self._display_lod_enabled:
@@ -314,15 +380,20 @@ class EmbeddedViewer(gl.GLViewWidget):
         # need our own copy because colorize_by_axis mutates `pcd.colors`.
         if display is pcd:
             display = copy.deepcopy(display)
-        pcd_ops.colorize_by_axis(display, self._color_axis)
+
+        # Snapshot the cloud's own RGB *before* colorize_by_axis overwrites it.
+        # voxel_down_sample averages colours per voxel, so this stays meaningful
+        # under display-LOD. Promoted to `_source_rgb` in apply_prepared_cloud.
+        src = np.asarray(display.colors, dtype=np.float32)
+        src = src.copy() if src.size else None
+        self._pending_src_rgb = src
+
+        if self._color_axis != "rgb":
+            pcd_ops.colorize_by_axis(display, self._color_axis)
 
         pts = np.asarray(display.points, dtype=np.float32)
-        cols = np.asarray(display.colors, dtype=np.float32)
         rgba = np.empty((len(pts), 4), dtype=np.float32)
-        if cols.size:
-            rgba[:, :3] = cols
-        else:
-            rgba[:, :3] = 0.6
+        rgba[:, :3] = self._resolve_colors(display, src, len(pts))
         rgba[:, 3] = 1.0
         return display, pts, rgba
 
@@ -332,12 +403,25 @@ class EmbeddedViewer(gl.GLViewWidget):
         pts: np.ndarray,
         rgba: np.ndarray,
         reset_view: bool = False,
+        reset_marker: bool = False,
     ) -> None:
-        """Main-thread step: push the prepared arrays to the GL scatter item."""
+        """Main-thread step: push the prepared arrays to the GL scatter item.
+
+        `reset_marker` zeroes the marker pose. Pass it only when the cloud's
+        frame genuinely changed — a file load, or applying the marker as the new
+        origin. It used to be unconditional, which meant *every* operation
+        (voxel, SOR, z-clip, crop, an eraser stroke, undo, even Reset Camera)
+        silently threw away a marker the user had positioned, then reported
+        "Marker is already at the origin — nothing to apply".
+        """
         if display is None or pts.size == 0:
             self.clear_cloud()
             return
         self._display_pcd = display
+        # Promote the source-RGB snapshot taken by prepare_cloud, so it always
+        # belongs to the cloud we are about to show.
+        self._source_rgb = self._pending_src_rgb
+        self._pending_src_rgb = None
         # New cloud → invalidate the colour cache (rebuild on next access).
         self._cached_pts = None
         self._cached_rgba = None
@@ -354,8 +438,13 @@ class EmbeddedViewer(gl.GLViewWidget):
         )
         self._scatter.setData(pos=pts, color=rgba, size=self._point_size, pxMode=True)
         self._fit_grid(pts)
+        # Rescaling the marker glyph to the new extent is always harmless;
+        # zeroing its pose is not (see the docstring).
         self._fit_marker(pts)
-        self.reset_marker()
+        if reset_marker:
+            self.reset_marker()
+        else:
+            self._refresh_marker_geometry()
         self._update_legend_range()
         # If Z-Slab editor was open, recompute its geometry/preview against
         # the new cloud (bounds are kept; main window may reset them).
@@ -366,16 +455,53 @@ class EmbeddedViewer(gl.GLViewWidget):
             self._fit_camera(pts)
         self.update()
 
-    def set_cloud(self, pcd: o3d.geometry.PointCloud, reset_view: bool = False) -> None:
+    def set_cloud(
+        self,
+        pcd: o3d.geometry.PointCloud,
+        reset_view: bool = False,
+        reset_marker: bool = False,
+    ) -> None:
         """Synchronous convenience wrapper — fine for small clouds and tests.
         For large clouds prefer prepare_cloud() on a worker + apply_prepared_cloud()
         on the main thread (see MainWindow._apply_async)."""
         display, pts, rgba = self.prepare_cloud(pcd)
-        self.apply_prepared_cloud(display, pts, rgba, reset_view=reset_view)
+        self.apply_prepared_cloud(display, pts, rgba, reset_view=reset_view, reset_marker=reset_marker)
+
+    def has_source_colors(self) -> bool:
+        """True when the displayed cloud carries its own RGB (so "rgb" mode
+        will show something other than flat grey)."""
+        return self._source_rgb is not None and self._source_rgb.size > 0
+
+    def rgb_gamma(self) -> float:
+        return self._rgb_gamma
+
+    def set_rgb_gamma(self, gamma: float) -> None:
+        """Display gamma for "rgb" mode. Below 1.0 brightens, above darkens;
+        1.0 leaves the file's colours untouched. No effect in axis modes."""
+        self._rgb_gamma = float(np.clip(float(gamma), 0.05, 5.0))
+        self._refresh_rgb()
+
+    def rgb_autolevel(self) -> bool:
+        return self._rgb_autolevel
+
+    def set_rgb_autolevel(self, on: bool) -> None:
+        """Per-channel 1-99 % contrast stretch before gamma, in "rgb" mode."""
+        self._rgb_autolevel = bool(on)
+        self._refresh_rgb()
+
+    def _refresh_rgb(self) -> None:
+        """Re-tone-map the current cloud in place. No-op outside "rgb" mode —
+        geometry is untouched, only the colour VBO is re-uploaded."""
+        if self._color_axis != "rgb" or self._display_pcd is None:
+            return
+        self._cached_rgba = None
+        slab_mask = self._compute_slab_mask() if self._slab_visible else None
+        self._refresh_scatter_colors(slab_mask=slab_mask)
+        self.update()
 
     def set_color_axis(self, axis: str) -> None:
         axis = axis.lower()
-        if axis not in {"x", "y", "z"}:
+        if axis not in {"x", "y", "z", "rgb"}:
             return
         self._color_axis = axis
         if self._display_pcd is None:
@@ -465,14 +591,14 @@ class EmbeddedViewer(gl.GLViewWidget):
             self._cached_pts = None
             self._cached_rgba = None
             return
-        pcd_ops.colorize_by_axis(self._display_pcd, self._color_axis)
+        if self._color_axis != "rgb":
+            pcd_ops.colorize_by_axis(self._display_pcd, self._color_axis)
         pts = np.asarray(self._display_pcd.points, dtype=np.float32)
-        cols = np.asarray(self._display_pcd.colors, dtype=np.float32)
-        rgba = np.empty((len(cols), 4), dtype=np.float32)
-        if cols.size:
-            rgba[:, :3] = cols
-        else:
-            rgba[:, :3] = 0.6
+        # Size from `pts`, not from the colour array: a colourless cloud gives
+        # a zero-length colour array, which would otherwise yield an empty
+        # rgba buffer for a non-empty cloud.
+        rgba = np.empty((len(pts), 4), dtype=np.float32)
+        rgba[:, :3] = self._resolve_colors(self._display_pcd, self._source_rgb, len(pts))
         rgba[:, 3] = 1.0
         self._cached_pts = pts
         self._cached_rgba = rgba
@@ -713,6 +839,13 @@ class EmbeddedViewer(gl.GLViewWidget):
         if abs(direction[2]) < 1e-9:
             return None
         t = (z_plane - near_w[2]) / direction[2]
+        # t < 0 means the plane is *behind* the near clip plane: the click was
+        # above the horizon, and the ray only meets z = z_plane if extended
+        # backwards through the camera. Returning that intersection puts the
+        # marker at a mirrored point behind the viewer, which reads as the
+        # marker teleporting to a nonsensical spot.
+        if t < 0.0:
+            return None
         hit = near_w + t * direction
         return float(hit[0]), float(hit[1])
 
@@ -784,7 +917,14 @@ class EmbeddedViewer(gl.GLViewWidget):
                     self._eraser_brush_shape,
                     self._eraser_brush_aspect,
                 )
-            ev.accept()
+                ev.accept()
+                return
+            # Any other button falls through to the base class so the camera can
+            # still be orbited and panned while the eraser is armed. Previously
+            # every button was swallowed, so the only way to re-aim the view was
+            # to toggle the eraser off and back on. Crop mode already behaves
+            # this way (it gates on LeftButton).
+            super().mousePressEvent(ev)
             return
         if self._crop_mode and ev.button() == QtCore.Qt.LeftButton:
             self._crop_origin = ev.pos()
@@ -816,8 +956,24 @@ class EmbeddedViewer(gl.GLViewWidget):
                 self._eraser_brush_aspect,
             )
             if self._eraser_path is not None:
-                # Decimate: skip points too close together for efficiency
-                if not self._eraser_path or (ev.pos() - self._eraser_path[-1]).manhattanLength() > 3:
+                last = self._eraser_path[-1]
+                gap = (ev.pos() - last).manhattanLength()
+                if gap > 3:
+                    # Interpolate along the segment. Qt only delivers a move
+                    # event per repaint, so a fast drag arrives as widely spaced
+                    # samples; stamping a disc at each one erased a dotted line
+                    # with untouched gaps between. Step at half the brush radius
+                    # so consecutive discs always overlap.
+                    step = max(self._eraser_brush_px // 2, 2)
+                    n_steps = int(gap // step)
+                    for i in range(1, n_steps):
+                        f = i / n_steps
+                        self._eraser_path.append(
+                            QtCore.QPoint(
+                                int(round(last.x() + (ev.pos().x() - last.x()) * f)),
+                                int(round(last.y() + (ev.pos().y() - last.y()) * f)),
+                            )
+                        )
                     self._eraser_path.append(ev.pos())
                     self._overlay.set_stroke(self._eraser_path)
             ev.accept()
