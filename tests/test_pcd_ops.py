@@ -179,10 +179,104 @@ def test_level_ground_corrects_10deg_tilt(tilted_cloud):
 
 
 def test_level_ground_idempotent(tilted_cloud):
+    """A second pass must not meaningfully move an already-levelled cloud.
+
+    Not asserted bitwise: `translate_to_zero` re-seats the floor on every call,
+    and RANSAC's fit on a floor with 1 mm noise carries a residual offset of
+    order 1e-8 m. Exact equality only held while the already-level branch
+    skipped the translation entirely — which was the bug that let a level cloud
+    whose floor sat at z=5 stay at z=5 (see the test below). 1 µm is far below
+    any physical relevance for LiDAR.
+    """
     out, _, _ = pcd_ops.level_ground(tilted_cloud)
     out2, _, tilt2 = pcd_ops.level_ground(out)
     assert tilt2 < 0.05
-    assert np.allclose(np.asarray(out2.points), np.asarray(out.points), atol=1e-9)
+    moved = np.abs(np.asarray(out2.points) - np.asarray(out.points)).max()
+    assert moved < 1e-6, f"second pass moved points by {moved:.2e} m"
+
+
+def test_level_ground_translates_an_already_level_cloud_to_zero():
+    """`translate_to_zero` must apply even when no rotation is needed."""
+    rng = np.random.default_rng(11)
+    pts = np.column_stack(
+        [
+            rng.uniform(-2, 2, 3000),
+            rng.uniform(-2, 2, 3000),
+            np.full(3000, 5.0),
+        ]
+    )
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
+    out, _, tilt = pcd_ops.level_ground(pcd)
+    assert tilt < 0.05  # already level, so no rotation
+    assert abs(float(np.asarray(out.points)[:, 2].mean())) < 1e-6  # but still moved to z=0
+
+
+def test_level_ground_recovers_the_floor_despite_a_denser_wall(tilted_cloud):
+    """A wall that out-votes the floor must not be mistaken for ground.
+
+    This is the ppt_15july.pcd failure mode: the winning plane had normal
+    ~[0.99, 0.11, 0.06] with 383 k inliers against the floor's 210 k, and the
+    old code aligned it to +Z — turning a 1.8 m-thick room scan into a 21.6 m
+    one. Here the retry loop should discard the wall and land on the floor.
+    """
+    rng = np.random.default_rng(12)
+    wall = np.column_stack(
+        [  # dense vertical slab at x ~ 0
+            rng.normal(0, 0.01, 40_000),
+            rng.uniform(-5, 5, 40_000),
+            rng.uniform(0, 3, 40_000),
+        ]
+    )
+    floor = np.column_stack(
+        [  # sparser true floor at z ~ 0
+            rng.uniform(0.5, 5, 8000),
+            rng.uniform(-5, 5, 8000),
+            rng.normal(0, 0.01, 8000),
+        ]
+    )
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.vstack([wall, floor])))
+    out, plane, tilt = pcd_ops.level_ground(pcd, floor_band=1.0)
+    assert tilt < 15.0, f"levelled against a {tilt:.1f}° plane — that is a wall"
+    assert abs(plane[2]) > 0.95
+    z = np.asarray(out.points)[:, 2]
+    assert np.ptp(z) < 4.0  # still a 3 m-tall room, not stood on its side
+
+
+def test_level_ground_raises_when_there_is_no_floor():
+    """Vertical structure only — refuse rather than rotate 90°."""
+    rng = np.random.default_rng(14)
+    wall = np.column_stack(
+        [
+            rng.normal(0, 0.01, 20_000),
+            rng.uniform(-5, 5, 20_000),
+            rng.uniform(0, 3, 20_000),
+        ]
+    )
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(wall))
+    with pytest.raises(ValueError, match="near-horizontal"):
+        pcd_ops.level_ground(pcd, floor_band=1.0, max_tilt_deg=30.0)
+
+
+def test_fit_ground_plane_prefers_the_floor_over_a_denser_wall():
+    rng = np.random.default_rng(13)
+    wall = np.column_stack(
+        [
+            rng.normal(0, 0.01, 30_000),
+            rng.uniform(-5, 5, 30_000),
+            rng.uniform(0, 3, 30_000),
+        ]
+    )
+    floor = np.column_stack(
+        [
+            rng.uniform(0, 5, 5000),
+            rng.uniform(-5, 5, 5000),
+            rng.normal(0, 0.01, 5000),
+        ]
+    )
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.vstack([wall, floor])))
+    n, d = pcd_ops.fit_ground_plane(pcd)
+    assert abs(n[2]) > 0.95, f"normal {n} is not near-vertical"
+    assert abs(d) < 0.2
 
 
 # ---------------------------------------------------------------------------
