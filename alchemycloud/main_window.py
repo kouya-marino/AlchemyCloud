@@ -8,6 +8,7 @@ Single-window layout (Paint/Photoshop-style):
 
 All 3D rendering happens inside this window; no pop-out viewer.
 """
+
 from __future__ import annotations
 
 import copy
@@ -18,17 +19,16 @@ import open3d as o3d
 from PyQt5 import QtCore, QtWidgets
 
 from . import pcd_ops
-from . import occupancy
-from .embedded_viewer import EmbeddedViewer, mask_points_in_rect, mask_points_in_brush
+from .embedded_viewer import EmbeddedViewer, mask_points_in_brush, mask_points_in_rect
 from .loading_overlay import LoadingOverlay
-from .worker import run_async
-from .widgets import ToggleSwitch
 from .occupancy_preview import OccupancyPreviewDialog
-
+from .widgets import ToggleSwitch
+from .worker import run_async
 
 # ---------------------------------------------------------------------------
 # Parameter dialog
 # ---------------------------------------------------------------------------
+
 
 class _ParamDialog(QtWidgets.QDialog):
     def __init__(self, title: str, fields: list[tuple], parent=None):
@@ -39,11 +39,14 @@ class _ParamDialog(QtWidgets.QDialog):
         for label, default, kind in fields:
             if kind == "float":
                 w = QtWidgets.QDoubleSpinBox()
-                w.setDecimals(4); w.setRange(-1e9, 1e9); w.setSingleStep(0.01)
+                w.setDecimals(4)
+                w.setRange(-1e9, 1e9)
+                w.setSingleStep(0.01)
                 w.setValue(float(default))
             elif kind == "int":
                 w = QtWidgets.QSpinBox()
-                w.setRange(-10_000_000, 10_000_000); w.setValue(int(default))
+                w.setRange(-10_000_000, 10_000_000)
+                w.setValue(int(default))
             elif kind.startswith("choice:"):
                 w = QtWidgets.QComboBox()
                 w.addItems(kind.split(":", 1)[1].split("|"))
@@ -51,14 +54,13 @@ class _ParamDialog(QtWidgets.QDialog):
                 if idx >= 0:
                     w.setCurrentIndex(idx)
             elif kind == "bool":
-                w = QtWidgets.QCheckBox(); w.setChecked(bool(default))
+                w = QtWidgets.QCheckBox()
+                w.setChecked(bool(default))
             else:
                 raise ValueError(f"Unknown field kind: {kind}")
             form.addRow(label, w)
             self._widgets[label] = (w, kind)
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-        )
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
@@ -80,6 +82,7 @@ class _ParamDialog(QtWidgets.QDialog):
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
+
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -191,9 +194,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.point_size_spin.setRange(0.5, 15.0)
         self.point_size_spin.setSingleStep(0.5)
         self.point_size_spin.setValue(1.5)
-        self.point_size_spin.setToolTip(
-            "Rendered point size in pixels — increase to see sparse clouds more clearly."
-        )
+        self.point_size_spin.setToolTip("Rendered point size in pixels — increase to see sparse clouds more clearly.")
         self.point_size_spin.valueChanged.connect(self.viewer.set_point_size)
         edit_tb.addWidget(self.point_size_spin)
 
@@ -226,9 +227,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._a_marker = marker_tb.addAction("Move Marker (LMB → XY, RMB → yaw)", self._on_marker_toggled)
         self._a_marker.setCheckable(True)
         self._a_reset_marker = marker_tb.addAction("Reset Marker", self.action_reset_marker)
-        self._a_apply_marker = marker_tb.addAction(
-            "Apply Marker as Origin", self.action_apply_marker
-        )
+        self._a_apply_marker = marker_tb.addAction("Apply Marker as Origin", self.action_apply_marker)
         self._a_apply_marker.setToolTip(
             "Re-frame the cloud so the current marker pose becomes (0, 0, 0) "
             "with yaw 0. Undoable. Save then writes the new frame."
@@ -240,7 +239,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.marker_x_spin = QtWidgets.QDoubleSpinBox()
         self.marker_x_spin.setDecimals(3)
         self.marker_x_spin.setSingleStep(0.05)
-        self.marker_x_spin.setRange(-1e6, 1e6)        # widened to the scope in _refresh_state
+        self.marker_x_spin.setRange(-1e6, 1e6)  # widened to the scope in _refresh_state
         self.marker_x_spin.setKeyboardTracking(False)  # commit on Enter/focus-out, not per digit
         self.marker_x_spin.setToolTip("Marker X (m). Clamped to the cloud's X bounds.")
         self.marker_x_spin.valueChanged.connect(self._on_marker_coord_entered)
@@ -333,9 +332,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.eraser_aspect_spin.setRange(0.2, 10.0)
         self.eraser_aspect_spin.setSingleStep(0.1)
         self.eraser_aspect_spin.setValue(2.0)
-        self.eraser_aspect_spin.setToolTip(
-            "Rectangle width / height ratio. Only used when shape = Rectangle."
-        )
+        self.eraser_aspect_spin.setToolTip("Rectangle width / height ratio. Only used when shape = Rectangle.")
         self.eraser_aspect_spin.setEnabled(False)  # only relevant for Rectangle
         self.eraser_aspect_spin.valueChanged.connect(self._on_eraser_aspect_changed)
         tools_tb.addWidget(self.eraser_aspect_spin)
@@ -361,10 +358,19 @@ class MainWindow(QtWidgets.QMainWindow):
         has = self.current_pcd is not None
         enable_action = has and not self._busy
         for a in (
-            self._a_voxel, self._a_sor, self._a_radius, self._a_zclip,
-            self._a_ground, self._a_level, self._a_crop, self._a_export,
-            self._a_marker, self._a_reset_marker, self._a_apply_marker,
-            self._a_zslab, self._a_eraser,
+            self._a_voxel,
+            self._a_sor,
+            self._a_radius,
+            self._a_zclip,
+            self._a_ground,
+            self._a_level,
+            self._a_crop,
+            self._a_export,
+            self._a_marker,
+            self._a_reset_marker,
+            self._a_apply_marker,
+            self._a_zslab,
+            self._a_eraser,
         ):
             a.setEnabled(enable_action)
         self._a_undo.setEnabled(bool(self.history) and not self._busy)
@@ -380,9 +386,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.eraser_shape_combo.setEnabled(enable_action)
         # The aspect spin is only meaningful for Rectangle; keep it gated on
         # both the global enable AND the current shape selection.
-        self.eraser_aspect_spin.setEnabled(
-            enable_action and self.eraser_shape_combo.currentText() == "Rectangle"
-        )
+        self.eraser_aspect_spin.setEnabled(enable_action and self.eraser_shape_combo.currentText() == "Rectangle")
         for spin in (self.marker_x_spin, self.marker_y_spin, self.marker_yaw_spin):
             spin.setEnabled(enable_action)
 
@@ -474,6 +478,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ``(pcd, (plane_before, tilt_deg))`` (NESTED), which would invoke
             ``on_extra((plane_before, tilt_deg))`` instead.
         """
+
         def wrapped():
             res = work_fn()
             if isinstance(res, tuple):
@@ -546,7 +551,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True)
 
         self._run_async(
-            work, on_success,
+            work,
+            on_success,
             message=f"Loading {os.path.basename(path)}…",
             error_title="Open failed",
         )
@@ -599,11 +605,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.current_pcd is None or self._busy:
             return
         cur = self.current_pcd
+
         def work():
             return self.viewer.prepare_cloud(cur)
+
         def on_success(prepared):
             display, pts, rgba = prepared
             self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True)
+
         self._run_async(work, on_success, message="Resetting camera…")
 
     def action_set_color_axis(self, axis_label: str):
@@ -625,8 +634,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.current_pcd is None:
             return
         cur = self.current_pcd
+
         def work():
             return self.viewer.prepare_cloud(cur)
+
         def on_success(prepared):
             display, pts, rgba = prepared
             self.viewer.apply_prepared_cloud(display, pts, rgba)
@@ -638,8 +649,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 else f"Display: LOD — rendering {shown:,} of {n:,} points"
             )
             self.statusBar().showMessage(msg, 6000)
+
         self._run_async(
-            work, on_success,
+            work,
+            on_success,
             message="Rendering full cloud…" if checked else "Downsampling for display…",
             error_title="Display update failed",
         )
@@ -683,9 +696,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pos = np.array(self.viewer.marker_position(), dtype=np.float64)
         yaw = float(np.radians(self.viewer.marker_yaw_degrees()))
         if np.allclose(pos, 0.0) and abs(yaw) < 1e-9:
-            self.statusBar().showMessage(
-                "Marker is already at the origin — nothing to apply.", 4000
-            )
+            self.statusBar().showMessage("Marker is already at the origin — nothing to apply.", 4000)
             return
         cur = self.current_pcd
         self._apply_async(
@@ -710,9 +721,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.viewer.set_marker_yaw(yaw)
 
     def _on_marker_moved(self, x: float, y: float, z: float, yaw_deg: float):
-        self.marker_label.setText(
-            f"Marker: ({x:.3f}, {y:.3f}, {z:.3f})  θ={yaw_deg:+6.1f}°"
-        )
+        self.marker_label.setText(f"Marker: ({x:.3f}, {y:.3f}, {z:.3f})  θ={yaw_deg:+6.1f}°")
         # Mirror mouse drags / Reset / load-time reset into the spin boxes.
         # Guarded both by a flag and blockSignals so neither path can loop.
         if not hasattr(self, "marker_x_spin"):
@@ -912,9 +921,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cur = self.current_pcd
         self._apply_async(
             "Outlier (SOR)",
-            lambda: pcd_ops.statistical_outlier_removal(
-                cur, nb_neighbors=v["Neighbors"], std_ratio=v["Std ratio"]
-            ),
+            lambda: pcd_ops.statistical_outlier_removal(cur, nb_neighbors=v["Neighbors"], std_ratio=v["Std ratio"]),
             message="Removing statistical outliers…",
         )
 
@@ -932,9 +939,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cur = self.current_pcd
         self._apply_async(
             "Outlier (Radius)",
-            lambda: pcd_ops.radius_outlier_removal(
-                cur, nb_points=v["Min points in radius"], radius=v["Radius (m)"]
-            ),
+            lambda: pcd_ops.radius_outlier_removal(cur, nb_points=v["Min points in radius"], radius=v["Radius (m)"]),
             message="Removing radius outliers…",
         )
 
@@ -944,8 +949,7 @@ class MainWindow(QtWidgets.QMainWindow):
         s = pcd_ops.stats(self.current_pcd)
         dlg = _ParamDialog(
             "Z-Clip",
-            [("Z min (m)", float(s.min_bound[2]), "float"),
-             ("Z max (m)", float(s.max_bound[2]), "float")],
+            [("Z min (m)", float(s.min_bound[2]), "float"), ("Z max (m)", float(s.max_bound[2]), "float")],
             self,
         )
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
@@ -981,9 +985,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def on_extra(plane):
             a, b, c, d = plane
-            self.statusBar().showMessage(
-                f"Plane: {a:.3f}x + {b:.3f}y + {c:.3f}z + {d:.3f} = 0", 8000
-            )
+            self.statusBar().showMessage(f"Plane: {a:.3f}x + {b:.3f}y + {c:.3f}z + {d:.3f} = 0", 8000)
 
         self._apply_async("Ground removal", work, message="Fitting ground plane…", on_extra=on_extra)
 
@@ -1001,29 +1003,27 @@ class MainWindow(QtWidgets.QMainWindow):
             if tilt_deg < 0.05:
                 msg = f"Already level (tilt = {tilt_deg:.3f}°) — no change."
             else:
-                msg = (
-                    f"Levelled {tilt_deg:.2f}°  "
-                    f"(plane: {a:.3f}x + {b:.3f}y + {c:.3f}z + {d:.3f} = 0)"
-                )
+                msg = f"Levelled {tilt_deg:.2f}°  (plane: {a:.3f}x + {b:.3f}y + {c:.3f}z + {d:.3f} = 0)"
             self.statusBar().showMessage(msg, 10000)
 
-        self._apply_async(
-            "Level ground", work, message="Detecting ground plane…", on_extra=on_extra
-        )
+        self._apply_async("Level ground", work, message="Detecting ground plane…", on_extra=on_extra)
 
     def action_undo(self):
         if not self.history or self._busy:
             return
         prev = self.history.pop()
         self._push_redo()  # save current state for Redo
+
         def work():
             return self.viewer.prepare_cloud(prev)
+
         def on_success(prepared):
             display, pts, rgba = prepared
             self.current_pcd = prev
             self.statusBar().showMessage("Undo", 3000)
             self._refresh_state()
             self.viewer.apply_prepared_cloud(display, pts, rgba)
+
         self._run_async(work, on_success, message="Undo…")
 
     def action_redo(self):
@@ -1034,14 +1034,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # the rest of redo_stack — re-doing should not invalidate further
         # forward steps.
         self._push_history(clear_redo=False)
+
         def work():
             return self.viewer.prepare_cloud(nxt)
+
         def on_success(prepared):
             display, pts, rgba = prepared
             self.current_pcd = nxt
             self.statusBar().showMessage("Redo", 3000)
             self._refresh_state()
             self.viewer.apply_prepared_cloud(display, pts, rgba)
+
         self._run_async(work, on_success, message="Redo…")
 
     def action_reset(self):
@@ -1049,14 +1052,17 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._push_history()
         clone = copy.deepcopy(self.original_pcd)
+
         def work():
             return self.viewer.prepare_cloud(clone)
+
         def on_success(prepared):
             display, pts, rgba = prepared
             self.current_pcd = clone
             self.statusBar().showMessage("Reset to original", 3000)
             self._refresh_state()
             self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True)
+
         self._run_async(work, on_success, message="Resetting…")
 
     # -- occupancy grid ----------------------------------------------------
@@ -1065,9 +1071,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.current_pcd is None or self._busy:
             return
         default_path = os.path.splitext(self.current_path or "map.pgm")[0] + "_map.pgm"
-        dlg = OccupancyPreviewDialog(
-            self.current_pcd, default_save_path=default_path, parent=self
-        )
+        dlg = OccupancyPreviewDialog(self.current_pcd, default_save_path=default_path, parent=self)
         dlg.setModal(False)
         dlg.show()
         # Keep a reference so the dialog isn't garbage-collected.

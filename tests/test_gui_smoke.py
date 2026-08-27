@@ -5,21 +5,20 @@ fires `_busy → not _busy` end-to-end. Doesn't try to render anything —
 the offscreen platform has a stub GL context that's good enough for
 the geometry-only paths we care about.
 """
+
 from __future__ import annotations
 
-import os
-import tempfile
-
 import copy
+
 import numpy as np
 import open3d as o3d
-import pytest
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtWidgets
 
 
 # Helper: build a MainWindow with a planted cloud already attached.
 def _seed_window(qapp, pcd):
     from alchemycloud.main_window import MainWindow
+
     w = MainWindow()
     w.show()
     qapp.processEvents()
@@ -35,14 +34,19 @@ def _seed_window(qapp, pcd):
 
 # ---------------------------------------------------------------------------
 
+
 def test_main_window_constructs(qapp):
     from alchemycloud.main_window import MainWindow
+
     w = MainWindow()
     w.show()
     qapp.processEvents()
     toolbar_names = sorted(tb.objectName() for tb in w.findChildren(QtWidgets.QToolBar))
     assert toolbar_names == [
-        "EditToolbar", "MarkerToolbar", "OccupancyToolbar", "ToolsToolbar",
+        "EditToolbar",
+        "MarkerToolbar",
+        "OccupancyToolbar",
+        "ToolsToolbar",
     ]
     # Color combo defaults to Z, display LOD switch is off (= LOD on).
     assert w.color_combo.currentText() == "Z"
@@ -55,12 +59,12 @@ def test_load_path_populates_state(qapp, busy_wait, cube_cloud, tmp_path):
     path = str(tmp_path / "cube.pcd")
     o3d.io.write_point_cloud(path, cube_cloud)
     from alchemycloud.main_window import MainWindow
+
     w = MainWindow()
     w.show()
     qapp.processEvents()
     w.load_path(path)
-    assert busy_wait(lambda: not w._busy and w.current_pcd is not None,
-                     timeout_s=5.0)
+    assert busy_wait(lambda: not w._busy and w.current_pcd is not None, timeout_s=5.0)
     assert len(w.current_pcd.points) == len(cube_cloud.points)
     assert w.current_path == path
     w.close()
@@ -71,6 +75,7 @@ def test_apply_filter_updates_history(qapp, busy_wait, cube_cloud):
     assert len(w.history) == 0
     # Skip the parameter dialog by calling the worker directly via _apply_async.
     from alchemycloud import pcd_ops
+
     cur = w.current_pcd
     w._apply_async("Voxel test", lambda: pcd_ops.voxel_downsample(cur, 0.2))
     assert busy_wait(lambda: not w._busy, timeout_s=5.0)
@@ -84,6 +89,7 @@ def test_undo_redo_round_trip(qapp, busy_wait, cube_cloud):
     w = _seed_window(qapp, cube_cloud)
     n_before = len(w.current_pcd.points)
     from alchemycloud import pcd_ops
+
     cur = w.current_pcd
     w._apply_async("Voxel test", lambda: pcd_ops.voxel_downsample(cur, 0.2))
     assert busy_wait(lambda: not w._busy, timeout_s=5.0)
@@ -104,6 +110,7 @@ def test_undo_redo_round_trip(qapp, busy_wait, cube_cloud):
 def test_occupancy_preview_renders_initial_grid(qapp, busy_wait, floor_with_chair):
     from alchemycloud.main_window import MainWindow
     from alchemycloud.occupancy_preview import OccupancyPreviewDialog
+
     w = MainWindow()
     w.show()
     w.original_pcd = copy.deepcopy(floor_with_chair)
@@ -111,8 +118,7 @@ def test_occupancy_preview_renders_initial_grid(qapp, busy_wait, floor_with_chai
     w.current_path = "<synth>"
     w._refresh_state()
     qapp.processEvents()
-    dlg = OccupancyPreviewDialog(floor_with_chair, default_save_path="/tmp/x.pgm",
-                                 parent=w)
+    dlg = OccupancyPreviewDialog(floor_with_chair, default_save_path="/tmp/x.pgm", parent=w)
     dlg.setModal(False)
     dlg.show()
     assert busy_wait(lambda: dlg._last_grid is not None, timeout_s=5.0)
@@ -172,6 +178,7 @@ def test_marker_spin_ranges_clamp_to_cloud_scope(qapp, cube_cloud):
 
 def test_point_size_spin_updates_viewer(qapp, cube_cloud):
     from alchemycloud import pcd_ops
+
     w = _seed_window(qapp, cube_cloud)
     assert w.viewer.point_size() == 1.5  # default
     w.point_size_spin.setValue(6.0)
@@ -183,9 +190,11 @@ def test_point_size_spin_updates_viewer(qapp, cube_cloud):
     w._apply_async("Voxel test", lambda: pcd_ops.voxel_downsample(cur, 0.2))
     # drain
     import time
+
     t0 = time.monotonic()
     while w._busy and time.monotonic() - t0 < 5.0:
-        qapp.processEvents(); time.sleep(0.02)
+        qapp.processEvents()
+        time.sleep(0.02)
     assert w.viewer.point_size() == 6.0
     assert w.viewer._scatter.size == 6.0
     w.close()

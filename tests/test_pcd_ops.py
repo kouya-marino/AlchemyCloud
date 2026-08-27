@@ -1,4 +1,5 @@
 """Unit tests for pure-math operations in `pcd_ops`."""
+
 from __future__ import annotations
 
 import os
@@ -10,10 +11,10 @@ import pytest
 
 from alchemycloud import pcd_ops
 
-
 # ---------------------------------------------------------------------------
 # I/O
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("ext", [".pcd", ".ply"])
 def test_load_save_roundtrip(cube_cloud, ext):
@@ -32,8 +33,9 @@ def test_load_save_roundtrip(cube_cloud, ext):
 
 def test_load_pcd_rejects_empty(tmp_path):
     empty = tmp_path / "empty.ply"
-    empty.write_text("ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\n"
-                     "property float y\nproperty float z\nend_header\n")
+    empty.write_text(
+        "ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\nproperty float y\nproperty float z\nend_header\n"
+    )
     with pytest.raises(ValueError, match="No points"):
         pcd_ops.load_pcd(str(empty))
 
@@ -41,6 +43,7 @@ def test_load_pcd_rejects_empty(tmp_path):
 # ---------------------------------------------------------------------------
 # Voxel downsample
 # ---------------------------------------------------------------------------
+
 
 def test_voxel_downsample_reduces_count(cube_cloud):
     out = pcd_ops.voxel_downsample(cube_cloud, 0.2)
@@ -58,6 +61,7 @@ def test_voxel_downsample_rejects_nonpositive(cube_cloud):
 # Outlier removal — SOR + radius
 # ---------------------------------------------------------------------------
 
+
 def test_statistical_outlier_removal_drops_outliers(cluster_with_outliers):
     n_in = len(cluster_with_outliers.points)
     out = pcd_ops.statistical_outlier_removal(cluster_with_outliers)
@@ -68,8 +72,7 @@ def test_statistical_outlier_removal_drops_outliers(cluster_with_outliers):
 
 def test_radius_outlier_removal_drops_outliers(cluster_with_outliers):
     n_in = len(cluster_with_outliers.points)
-    out = pcd_ops.radius_outlier_removal(cluster_with_outliers,
-                                         nb_points=20, radius=0.1)
+    out = pcd_ops.radius_outlier_removal(cluster_with_outliers, nb_points=20, radius=0.1)
     assert len(out.points) < n_in
     assert len(out.points) >= n_in - 60
 
@@ -85,17 +88,21 @@ def test_radius_outlier_rejects_bad_args(cluster_with_outliers):
 # Z-clip
 # ---------------------------------------------------------------------------
 
+
 def test_z_clip_inclusive_bounds():
     # Include points AT the boundary so inclusive vs strict comparison can
     # be detected by the test (uniform random samples never land on round
     # numbers exactly).
-    pts = np.array([
-        [0.0, 0.0, -0.5],   # exactly at z_min — must be KEPT (inclusive)
-        [0.0, 0.0,  0.5],   # exactly at z_max — must be KEPT (inclusive)
-        [0.0, 0.0,  0.0],   # interior — kept
-        [0.0, 0.0, -0.51],  # just below — dropped
-        [0.0, 0.0,  0.51],  # just above — dropped
-    ], dtype=np.float64)
+    pts = np.array(
+        [
+            [0.0, 0.0, -0.5],  # exactly at z_min — must be KEPT (inclusive)
+            [0.0, 0.0, 0.5],  # exactly at z_max — must be KEPT (inclusive)
+            [0.0, 0.0, 0.0],  # interior — kept
+            [0.0, 0.0, -0.51],  # just below — dropped
+            [0.0, 0.0, 0.51],  # just above — dropped
+        ],
+        dtype=np.float64,
+    )
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
     out = pcd_ops.z_clip(pcd, -0.5, 0.5)
@@ -113,13 +120,16 @@ def test_z_clip_rejects_inverted_range(cube_cloud):
 # RANSAC ground
 # ---------------------------------------------------------------------------
 
+
 def test_remove_ground_ransac_finds_floor():
     rng = np.random.default_rng(3)
-    floor = np.column_stack([
-        rng.uniform(-2, 2, 5000),
-        rng.uniform(-2, 2, 5000),
-        rng.normal(0, 0.005, 5000),
-    ])
+    floor = np.column_stack(
+        [
+            rng.uniform(-2, 2, 5000),
+            rng.uniform(-2, 2, 5000),
+            rng.normal(0, 0.005, 5000),
+        ]
+    )
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(floor)
     _, ground, plane = pcd_ops.remove_ground_ransac(pcd, distance_threshold=0.05)
@@ -134,6 +144,7 @@ def test_remove_ground_ransac_finds_floor():
 # ---------------------------------------------------------------------------
 # transform_to_marker_frame
 # ---------------------------------------------------------------------------
+
 
 def test_transform_to_marker_frame_translation():
     pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float64)
@@ -157,6 +168,7 @@ def test_transform_to_marker_frame_rotation():
 # level_ground
 # ---------------------------------------------------------------------------
 
+
 def test_level_ground_corrects_10deg_tilt(tilted_cloud):
     out, plane_before, tilt_deg = pcd_ops.level_ground(tilted_cloud)
     assert abs(tilt_deg - 10.0) < 0.5
@@ -177,6 +189,7 @@ def test_level_ground_idempotent(tilted_cloud):
 # colorize_by_axis
 # ---------------------------------------------------------------------------
 
+
 def test_colorize_by_axis_writes_normalised_colors(cube_cloud):
     pcd_ops.colorize_by_axis(cube_cloud, axis="z")
     cols = np.asarray(cube_cloud.colors)
@@ -192,6 +205,7 @@ def test_colorize_by_axis_rejects_bad_axis(cube_cloud):
 # ---------------------------------------------------------------------------
 # display_downsample
 # ---------------------------------------------------------------------------
+
 
 def test_display_downsample_under_target():
     pts = np.random.default_rng(0).uniform(-5, 5, (800_000, 3))
@@ -211,6 +225,7 @@ def test_display_downsample_passthrough_for_small_clouds(cube_cloud):
 # ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
+
 
 def test_stats_matches_input(cube_cloud):
     s = pcd_ops.stats(cube_cloud)

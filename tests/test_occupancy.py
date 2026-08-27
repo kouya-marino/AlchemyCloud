@@ -1,21 +1,21 @@
 """Unit tests for `occupancy.build` / `save` — binary + tristate paths."""
+
 from __future__ import annotations
 
 import os
 import tempfile
 
 import numpy as np
-import open3d as o3d
 import pytest
 import yaml
 from PIL import Image
 
 from alchemycloud import occupancy
 
-
 # ---------------------------------------------------------------------------
 # Binary policy
 # ---------------------------------------------------------------------------
+
 
 def test_grid_params_defaults():
     p = occupancy.GridParams()
@@ -40,8 +40,7 @@ def test_binary_projection_marks_floor_occupied(floor_with_chair):
 
 
 def test_binary_voxel3d_produces_grid(floor_with_chair):
-    params = occupancy.GridParams(resolution=0.1, z_min=-0.1, z_max=1.0,
-                                  method="voxel3d")
+    params = occupancy.GridParams(resolution=0.1, z_min=-0.1, z_max=1.0, method="voxel3d")
     grid = occupancy.build(floor_with_chair, params)
     assert grid.image.size > 0
     assert (grid.image == occupancy.OCC).sum() > 0
@@ -64,14 +63,18 @@ def test_empty_z_range_raises(floor_with_chair):
 # Tristate policy
 # ---------------------------------------------------------------------------
 
+
 def test_tristate_separates_free_and_occupied(floor_with_chair):
     """Floor at z=0, chair at z=0.5, threshold=0.2:
-      * chair footprint → occupied (some Z > 0.2)
-      * floor-only cells → free (have points but all <= 0.2)
-      * empty (padding) cells → unknown
+    * chair footprint → occupied (some Z > 0.2)
+    * floor-only cells → free (have points but all <= 0.2)
+    * empty (padding) cells → unknown
     """
     params = occupancy.GridParams(
-        resolution=0.1, z_min=-0.1, z_max=1.0, height_threshold=0.2,
+        resolution=0.1,
+        z_min=-0.1,
+        z_max=1.0,
+        height_threshold=0.2,
     )
     grid = occupancy.build(floor_with_chair, params)
     occ = int((grid.image == occupancy.OCC).sum())
@@ -90,8 +93,11 @@ def test_tristate_separates_free_and_occupied(floor_with_chair):
 
 def test_tristate_with_voxel3d(floor_with_chair):
     params = occupancy.GridParams(
-        resolution=0.1, z_min=-0.1, z_max=1.0,
-        method="voxel3d", height_threshold=0.2,
+        resolution=0.1,
+        z_min=-0.1,
+        z_max=1.0,
+        method="voxel3d",
+        height_threshold=0.2,
     )
     grid = occupancy.build(floor_with_chair, params)
     occ = int((grid.image == occupancy.OCC).sum())
@@ -104,9 +110,13 @@ def test_tristate_with_voxel3d(floor_with_chair):
 # Save / YAML round-trip
 # ---------------------------------------------------------------------------
 
+
 def test_save_roundtrip_pgm_yaml(floor_with_chair):
     params = occupancy.GridParams(
-        resolution=0.1, z_min=-0.1, z_max=1.0, height_threshold=0.2,
+        resolution=0.1,
+        z_min=-0.1,
+        z_max=1.0,
+        height_threshold=0.2,
     )
     grid = occupancy.build(floor_with_chair, params)
     with tempfile.NamedTemporaryFile(suffix=".pgm", delete=False) as f:

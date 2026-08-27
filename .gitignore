@@ -50,3 +50,20 @@ test/
 *.pcd
 *.ply
 *.pgm
+
+# Additional sample-data dirs (same rationale as the block above)
+Sudachi/
+03_July/
+
+# Large third-party documents that are not project source
+*.pdf
+# ...but the committed audit report is project documentation.
+!docs/**/*.pdf
+
+# Generated patches / scratch
+*.patch
+
+# Session transcripts. These hold absolute paths, e-mail addresses and full
+# tool output; this repo has a public remote, so they must never be committed.
+# Named explicitly, NOT as *.txt — requirements.txt is tracked.
+27Aug.txt

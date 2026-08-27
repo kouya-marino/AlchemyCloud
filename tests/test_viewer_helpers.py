@@ -4,33 +4,36 @@ These helpers don't touch any Qt / GL state, so the tests run with the
 offscreen Qt platform (set in `conftest.py`) but without spinning up a
 QApplication.
 """
+
 from __future__ import annotations
 
 import numpy as np
-import pytest
 from PIL import Image, ImageDraw
 from PyQt5 import QtCore
 
 from alchemycloud.embedded_viewer import (
-    project_points,
-    mask_points_in_rect,
     mask_points_in_brush,
+    mask_points_in_rect,
+    project_points,
 )
-
 
 # ---------------------------------------------------------------------------
 # project_points
 # ---------------------------------------------------------------------------
 
+
 def test_project_points_identity_mvp():
     """Identity MVP at 100×100: NDC == world, pixels are (x+1)*50, (1-y)*50."""
     mvp = np.eye(4)
     W, H = 100, 100
-    pts = np.array([
-        [0.0, 0.0, 0.0],   # → (50, 50)
-        [0.5, 0.5, 0.0],   # → (75, 25)
-        [-0.5, -0.5, 0.0], # → (25, 75)
-    ], dtype=np.float64)
+    pts = np.array(
+        [
+            [0.0, 0.0, 0.0],  # → (50, 50)
+            [0.5, 0.5, 0.0],  # → (75, 25)
+            [-0.5, -0.5, 0.0],  # → (25, 75)
+        ],
+        dtype=np.float64,
+    )
     px, in_front = project_points(pts, mvp, W, H)
     assert in_front.all()
     expected = np.array([[50, 50], [75, 25], [25, 75]], dtype=np.float64)
@@ -49,15 +52,19 @@ def test_project_points_excludes_behind_camera():
 # mask_points_in_rect
 # ---------------------------------------------------------------------------
 
+
 def test_mask_points_in_rect_separates_inside_outside():
     mvp = np.eye(4)
     W, H = 100, 100
-    pts = np.array([
-        [0.0, 0.0, 0.0],   # pixel (50, 50)
-        [0.5, 0.5, 0.0],   # pixel (75, 25)
-        [-0.5, -0.5, 0.0], # pixel (25, 75)
-        [0.99, 0.99, 0.0], # pixel (99.5, 0.5) — top-right
-    ], dtype=np.float64)
+    pts = np.array(
+        [
+            [0.0, 0.0, 0.0],  # pixel (50, 50)
+            [0.5, 0.5, 0.0],  # pixel (75, 25)
+            [-0.5, -0.5, 0.0],  # pixel (25, 75)
+            [0.99, 0.99, 0.0],  # pixel (99.5, 0.5) — top-right
+        ],
+        dtype=np.float64,
+    )
     rect = QtCore.QRect(QtCore.QPoint(20, 40), QtCore.QPoint(60, 80))
     mask = mask_points_in_rect(pts, mvp, W, H, rect)
     assert mask.tolist() == [True, False, True, False]
@@ -66,6 +73,7 @@ def test_mask_points_in_rect_separates_inside_outside():
 # ---------------------------------------------------------------------------
 # mask_points_in_brush
 # ---------------------------------------------------------------------------
+
 
 def test_mask_points_in_brush_circle_hits_within_tolerance():
     """Paint a circular brush at the centre of a 200×200 canvas, project
@@ -113,10 +121,7 @@ def test_mask_points_in_brush_rectangle_exact():
     # Recompute the expected hits directly via the rect bounds in pixel space.
     px = (pts[:, 0] + 1.0) * (W / 2.0)
     py = (1.0 - pts[:, 1]) * (H / 2.0)
-    expected_mask = (
-        (px >= W // 2 - w) & (px <= W // 2 + w)
-        & (py >= H // 2 - h) & (py <= H // 2 + h)
-    )
+    expected_mask = (px >= W // 2 - w) & (px <= W // 2 + w) & (py >= H // 2 - h) & (py <= H // 2 + h)
     # The PIL rectangle endpoints are inclusive — allow a 1-pixel slack.
     diff = abs(int(mask.sum()) - int(expected_mask.sum()))
     assert diff <= max(5, int(0.02 * expected_mask.sum()))

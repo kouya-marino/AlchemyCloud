@@ -5,6 +5,7 @@ test process doesn't need an X server.  The pyqtgraph `Requires >=
 OpenGL 2.1` warning printed under offscreen is harmless — pyqtgraph
 falls back to a stub context for the geometry-only paths we test.
 """
+
 from __future__ import annotations
 
 import os
@@ -24,10 +25,10 @@ import numpy as np  # noqa: E402
 import open3d as o3d  # noqa: E402
 import pytest  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Qt / GUI fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def qapp():
@@ -60,6 +61,7 @@ def busy_wait(qapp):
 # Synthetic point-cloud fixtures (no Qt — fast)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cube_cloud() -> o3d.geometry.PointCloud:
     """5 000 points uniformly distributed in [-1, 1]^3."""
@@ -89,16 +91,20 @@ def floor_with_chair() -> o3d.geometry.PointCloud:
     Used for occupancy tests: tristate with threshold=0.2 should mark
     the chair footprint occupied and the floor free."""
     rng = np.random.default_rng(1)
-    floor = np.column_stack([
-        rng.uniform(-2, 2, 2000),
-        rng.uniform(-2, 2, 2000),
-        np.zeros(2000),
-    ])
-    chair = np.column_stack([
-        rng.uniform(-0.3, 0.3, 200),
-        rng.uniform(-0.3, 0.3, 200),
-        np.full(200, 0.5),
-    ])
+    floor = np.column_stack(
+        [
+            rng.uniform(-2, 2, 2000),
+            rng.uniform(-2, 2, 2000),
+            np.zeros(2000),
+        ]
+    )
+    chair = np.column_stack(
+        [
+            rng.uniform(-0.3, 0.3, 200),
+            rng.uniform(-0.3, 0.3, 200),
+            np.full(200, 0.5),
+        ]
+    )
     pts = np.vstack([floor, chair])
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
@@ -110,23 +116,29 @@ def tilted_cloud() -> o3d.geometry.PointCloud:
     """12 000-point cloud (10 000 floor + 2 000 above) rotated +10° about
     +X and translated up by 1.5 m. Designed for `level_ground` tests."""
     rng = np.random.default_rng(2)
-    floor = np.column_stack([
-        rng.uniform(-2, 2, 10_000),
-        rng.uniform(-2, 2, 10_000),
-        rng.normal(0, 0.001, 10_000),
-    ])
-    extra = np.column_stack([
-        rng.uniform(-2, 2, 2000),
-        rng.uniform(-2, 2, 2000),
-        rng.uniform(0.5, 2.0, 2000),
-    ])
+    floor = np.column_stack(
+        [
+            rng.uniform(-2, 2, 10_000),
+            rng.uniform(-2, 2, 10_000),
+            rng.normal(0, 0.001, 10_000),
+        ]
+    )
+    extra = np.column_stack(
+        [
+            rng.uniform(-2, 2, 2000),
+            rng.uniform(-2, 2, 2000),
+            rng.uniform(0.5, 2.0, 2000),
+        ]
+    )
     pts = np.vstack([floor, extra])
     theta = np.radians(10.0)
-    Rx = np.array([
-        [1, 0, 0],
-        [0, np.cos(theta), -np.sin(theta)],
-        [0, np.sin(theta), np.cos(theta)],
-    ])
+    Rx = np.array(
+        [
+            [1, 0, 0],
+            [0, np.cos(theta), -np.sin(theta)],
+            [0, np.sin(theta), np.cos(theta)],
+        ]
+    )
     pts = (Rx @ pts.T).T + np.array([0.0, 0.0, 1.5])
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)

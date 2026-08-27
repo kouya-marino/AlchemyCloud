@@ -4,6 +4,7 @@ The overlay is a child of the central widget (the EmbeddedViewer). It tracks
 its parent's size via an event filter and blocks mouse input on the canvas
 while visible so the user cannot orbit / crop / drag-marker during work.
 """
+
 from __future__ import annotations
 
 from PyQt5 import QtCore, QtGui, QtWidgets

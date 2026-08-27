@@ -9,6 +9,7 @@ queue an avalanche of rebuilds.
 The dialog operates on whatever ``pcd`` you hand it on construction —
 the caller (`MainWindow.action_export_map`) passes in `self.current_pcd`.
 """
+
 from __future__ import annotations
 
 import os
@@ -17,8 +18,7 @@ import numpy as np
 import open3d as o3d
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from . import occupancy
-from . import pcd_ops
+from . import occupancy, pcd_ops
 from .worker import run_async
 
 
@@ -159,9 +159,7 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         self.preview_label = QtWidgets.QLabel("Building…")
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
         self.preview_label.setMinimumSize(480, 360)
-        self.preview_label.setStyleSheet(
-            "background: #15171c; color: #888; border: 1px solid #2a2d34;"
-        )
+        self.preview_label.setStyleSheet("background: #15171c; color: #888; border: 1px solid #2a2d34;")
         pv.addWidget(self.preview_label, 1)
         legend = QtWidgets.QLabel(
             "<span style='color:#000;background:#fff;padding:0 4px;'>occ</span>  "
@@ -198,14 +196,9 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
             z_max=z_hi,
             method=self.method_combo.currentText(),
             min_points_per_cell=int(self.min_pts_spin.value()),
-            unknown_outside_footprint=self.unknown_check.isChecked()
-            and not self.tristate_check.isChecked(),
+            unknown_outside_footprint=self.unknown_check.isChecked() and not self.tristate_check.isChecked(),
             padding_cells=int(self.padding_spin.value()),
-            height_threshold=(
-                float(self.threshold_spin.value())
-                if self.tristate_check.isChecked()
-                else None
-            ),
+            height_threshold=(float(self.threshold_spin.value()) if self.tristate_check.isChecked() else None),
         )
 
     # -- preview rebuild ---------------------------------------------------
@@ -250,14 +243,11 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         qimg = QtGui.QImage(img_u8.data, w, h, w, QtGui.QImage.Format_Grayscale8).copy()
         pix = QtGui.QPixmap.fromImage(qimg)
         lbl = self.preview_label
-        scaled = pix.scaled(
-            lbl.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
-        )
+        scaled = pix.scaled(lbl.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation)
         lbl.setPixmap(scaled)
 
     def _update_status(self, grid: occupancy.OccupancyGrid):
         img = grid.image
-        n = img.size
         occ = float((img == occupancy.OCC).mean() * 100)
         free = float((img == occupancy.FREE).mean() * 100)
         unk = float((img == occupancy.UNKNOWN).mean() * 100)
@@ -298,9 +288,7 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         if not path:
             return
         pgm_path, yaml_path = occupancy.save(self._last_grid, path, self._last_params)
-        self.status_label.setText(
-            f"Saved {os.path.basename(str(pgm_path))} + {os.path.basename(str(yaml_path))}"
-        )
+        self.status_label.setText(f"Saved {os.path.basename(str(pgm_path))} + {os.path.basename(str(yaml_path))}")
 
     # -- resize: rescale the preview pixmap --------------------------------
 

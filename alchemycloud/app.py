@@ -1,4 +1,5 @@
 """Entry point for the LiDAR PCD editor + occupancy-grid exporter."""
+
 from __future__ import annotations
 
 import sys

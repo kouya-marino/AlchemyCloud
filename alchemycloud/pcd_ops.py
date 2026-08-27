@@ -1,4 +1,5 @@
 """Point-cloud editing operations built on Open3D."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -46,9 +47,7 @@ def radius_outlier_removal(
     return filtered
 
 
-def z_clip(
-    pcd: o3d.geometry.PointCloud, z_min: float, z_max: float
-) -> o3d.geometry.PointCloud:
+def z_clip(pcd: o3d.geometry.PointCloud, z_min: float, z_max: float) -> o3d.geometry.PointCloud:
     if z_max <= z_min:
         raise ValueError("z_max must be > z_min")
     pts = np.asarray(pcd.points)
@@ -135,6 +134,7 @@ def level_ground(
       "correcting" rotation at that scale is just float drift.
     """
     import copy as _copy
+
     from scipy.spatial.transform import Rotation
 
     plane_model, _ = pcd.segment_plane(
@@ -178,9 +178,7 @@ def level_ground(
     return out, plane_before, tilt_deg
 
 
-def display_downsample(
-    pcd: o3d.geometry.PointCloud, max_points: int = 500_000
-) -> o3d.geometry.PointCloud:
+def display_downsample(pcd: o3d.geometry.PointCloud, max_points: int = 500_000) -> o3d.geometry.PointCloud:
     """Return a voxel-downsampled clone targeting roughly `max_points` points
     for fast on-screen rendering. The full cloud is left untouched."""
     n = len(pcd.points)

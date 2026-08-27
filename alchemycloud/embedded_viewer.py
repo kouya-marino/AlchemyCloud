@@ -9,6 +9,7 @@ with the widget-pixel rectangle. The actual point-membership math is exposed
 as module-level helpers so the main window can do the crop against the full
 (not display-LOD) cloud.
 """
+
 from __future__ import annotations
 
 import copy
@@ -21,10 +22,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from . import pcd_ops
 from .widgets import ColorbarLegend
 
-
 # ---------------------------------------------------------------------------
 # Overlay widget — draws the crop rectangle on top of the GL view
 # ---------------------------------------------------------------------------
+
 
 class _CropOverlay(QtWidgets.QWidget):
     """Translucent overlay used for the crop rectangle, the eraser brush
@@ -39,7 +40,7 @@ class _CropOverlay(QtWidgets.QWidget):
         self._brush_center: QtCore.QPoint | None = None
         self._brush_radius_px: int = 30
         self._brush_shape: str = "circle"  # "circle" | "square" | "rectangle"
-        self._brush_aspect: float = 2.0    # rectangle only — width = aspect × height
+        self._brush_aspect: float = 2.0  # rectangle only — width = aspect × height
         self._stroke: list[QtCore.QPoint] = []
 
     def set_rect(self, rect: QtCore.QRect | None) -> None:
@@ -112,6 +113,7 @@ class _CropOverlay(QtWidgets.QWidget):
 # Embedded GLViewWidget
 # ---------------------------------------------------------------------------
 
+
 class EmbeddedViewer(gl.GLViewWidget):
     """In-window 3D viewer. Use `set_cloud(pcd)` to display a cloud and
     `set_color_axis('x'|'y'|'z')` to recolor. Emits `cropRequested(QRect)`
@@ -133,7 +135,7 @@ class EmbeddedViewer(gl.GLViewWidget):
         # button. (Plain orbit / pan modes ignore the extra events.)
         self.setMouseTracking(True)
 
-        self._point_size = 1.5   # rendered scatter point size (px); user-adjustable
+        self._point_size = 1.5  # rendered scatter point size (px); user-adjustable
         self._scatter = gl.GLScatterPlotItem(
             pos=np.zeros((0, 3), dtype=np.float32),
             color=np.zeros((0, 4), dtype=np.float32),
@@ -152,17 +154,20 @@ class EmbeddedViewer(gl.GLViewWidget):
         # lines (X red, Y green, Z blue). Size scales with the loaded cloud.
         # The marker carries a yaw rotation about Z; X/Y axes rotate with it.
         self._marker_pos = np.zeros(3, dtype=np.float64)
-        self._marker_yaw = 0.0   # radians
+        self._marker_yaw = 0.0  # radians
         self._marker_size = 1.0
         self._marker_dot = gl.GLScatterPlotItem(
             pos=np.zeros((1, 3), dtype=np.float32),
             color=np.array([[1.0, 1.0, 1.0, 1.0]], dtype=np.float32),
-            size=12, pxMode=True,
+            size=12,
+            pxMode=True,
         )
         self._marker_axes = gl.GLLinePlotItem(
             pos=np.zeros((6, 3), dtype=np.float32),
             color=np.zeros((6, 4), dtype=np.float32),
-            width=3, antialias=True, mode="lines",
+            width=3,
+            antialias=True,
+            mode="lines",
         )
         self.addItem(self._marker_axes)
         self.addItem(self._marker_dot)
@@ -194,14 +199,18 @@ class EmbeddedViewer(gl.GLViewWidget):
             vertexes=np.zeros((4, 3), dtype=np.float32),
             faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32),
             color=(1.0, 0.85, 0.2, 0.18),
-            smooth=False, drawEdges=True, edgeColor=(1.0, 0.85, 0.2, 0.85),
+            smooth=False,
+            drawEdges=True,
+            edgeColor=(1.0, 0.85, 0.2, 0.85),
             glOptions="translucent",
         )
         self._slab_bottom = gl.GLMeshItem(
             vertexes=np.zeros((4, 3), dtype=np.float32),
             faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32),
             color=(1.0, 0.85, 0.2, 0.18),
-            smooth=False, drawEdges=True, edgeColor=(1.0, 0.85, 0.2, 0.85),
+            smooth=False,
+            drawEdges=True,
+            edgeColor=(1.0, 0.85, 0.2, 0.85),
             glOptions="translucent",
         )
         self.addItem(self._slab_bottom)
@@ -212,8 +221,8 @@ class EmbeddedViewer(gl.GLViewWidget):
         # Eraser tool state
         self._eraser_mode = False
         self._eraser_brush_px = 30
-        self._eraser_brush_shape = "circle"   # "circle" | "square" | "rectangle"
-        self._eraser_brush_aspect = 2.0       # only used by "rectangle"
+        self._eraser_brush_shape = "circle"  # "circle" | "square" | "rectangle"
+        self._eraser_brush_aspect = 2.0  # only used by "rectangle"
         self._eraser_path: list[QtCore.QPoint] | None = None
 
         # Marker drag state
@@ -417,20 +426,24 @@ class EmbeddedViewer(gl.GLViewWidget):
         # once per cloud — slab bounds don't change the cloud footprint.
         if not hasattr(self, "_cached_xy_bbox") or self._cached_xy_bbox is None:
             pts = self._cached_pts
-            xmin = float(pts[:, 0].min()); ymin = float(pts[:, 1].min())
-            xmax = float(pts[:, 0].max()); ymax = float(pts[:, 1].max())
+            xmin = float(pts[:, 0].min())
+            ymin = float(pts[:, 1].min())
+            xmax = float(pts[:, 0].max())
+            ymax = float(pts[:, 1].max())
             dx = max((xmax - xmin) * 0.05, 0.1)
             dy = max((ymax - ymin) * 0.05, 0.1)
             self._cached_xy_bbox = (xmin - dx, ymin - dy, xmax + dx, ymax + dy)
         xmin, ymin, xmax, ymax = self._cached_xy_bbox
-        for plane, z in ((self._slab_top, self._slab_high),
-                         (self._slab_bottom, self._slab_low)):
-            verts = np.array([
-                [xmin, ymin, z],
-                [xmax, ymin, z],
-                [xmax, ymax, z],
-                [xmin, ymax, z],
-            ], dtype=np.float32)
+        for plane, z in ((self._slab_top, self._slab_high), (self._slab_bottom, self._slab_low)):
+            verts = np.array(
+                [
+                    [xmin, ymin, z],
+                    [xmax, ymin, z],
+                    [xmax, ymax, z],
+                    [xmin, ymax, z],
+                ],
+                dtype=np.float32,
+            )
             plane.setMeshData(
                 vertexes=verts,
                 faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32),
@@ -507,13 +520,17 @@ class EmbeddedViewer(gl.GLViewWidget):
             if not self.rect().contains(cursor_pos):
                 cursor_pos = self.rect().center()
             self._overlay.set_brush(
-                cursor_pos, self._eraser_brush_px,
-                self._eraser_brush_shape, self._eraser_brush_aspect,
+                cursor_pos,
+                self._eraser_brush_px,
+                self._eraser_brush_shape,
+                self._eraser_brush_aspect,
             )
         else:
             self._overlay.set_brush(
-                None, self._eraser_brush_px,
-                self._eraser_brush_shape, self._eraser_brush_aspect,
+                None,
+                self._eraser_brush_px,
+                self._eraser_brush_shape,
+                self._eraser_brush_aspect,
             )
         self._update_cursor()
 
@@ -548,8 +565,10 @@ class EmbeddedViewer(gl.GLViewWidget):
             if not self.rect().contains(center):
                 center = self.rect().center()
         self._overlay.set_brush(
-            center, self._eraser_brush_px,
-            self._eraser_brush_shape, self._eraser_brush_aspect,
+            center,
+            self._eraser_brush_px,
+            self._eraser_brush_shape,
+            self._eraser_brush_aspect,
         )
 
     def set_crop_mode(self, on: bool) -> None:
@@ -634,17 +653,23 @@ class EmbeddedViewer(gl.GLViewWidget):
         zv = np.array([0.0, 0.0, 1.0], dtype=np.float32) * s
         pts = np.array(
             [
-                p, p + xv,
-                p, p + yv,
-                p, p + zv,
+                p,
+                p + xv,
+                p,
+                p + yv,
+                p,
+                p + zv,
             ],
             dtype=np.float32,
         )
         cols = np.array(
             [
-                [1.0, 0.35, 0.35, 1.0], [1.0, 0.35, 0.35, 1.0],
-                [0.35, 1.0, 0.35, 1.0], [0.35, 1.0, 0.35, 1.0],
-                [0.45, 0.55, 1.0, 1.0], [0.45, 0.55, 1.0, 1.0],
+                [1.0, 0.35, 0.35, 1.0],
+                [1.0, 0.35, 0.35, 1.0],
+                [0.35, 1.0, 0.35, 1.0],
+                [0.35, 1.0, 0.35, 1.0],
+                [0.45, 0.55, 1.0, 1.0],
+                [0.45, 0.55, 1.0, 1.0],
             ],
             dtype=np.float32,
         )
@@ -745,9 +770,7 @@ class EmbeddedViewer(gl.GLViewWidget):
         margin = 10
         legend_w = self._legend.width()
         legend_h = max(min(self.height() - 2 * margin, 280), 140)
-        self._legend.setGeometry(
-            self.width() - legend_w - margin, margin, legend_w, legend_h
-        )
+        self._legend.setGeometry(self.width() - legend_w - margin, margin, legend_w, legend_h)
         self._legend.raise_()
 
     def mousePressEvent(self, ev):
@@ -756,8 +779,10 @@ class EmbeddedViewer(gl.GLViewWidget):
                 self._eraser_path = [ev.pos()]
                 self._overlay.set_stroke(self._eraser_path)
                 self._overlay.set_brush(
-                    ev.pos(), self._eraser_brush_px,
-                    self._eraser_brush_shape, self._eraser_brush_aspect,
+                    ev.pos(),
+                    self._eraser_brush_px,
+                    self._eraser_brush_shape,
+                    self._eraser_brush_aspect,
                 )
             ev.accept()
             return
@@ -785,8 +810,10 @@ class EmbeddedViewer(gl.GLViewWidget):
     def mouseMoveEvent(self, ev):
         if self._eraser_mode:
             self._overlay.set_brush(
-                ev.pos(), self._eraser_brush_px,
-                self._eraser_brush_shape, self._eraser_brush_aspect,
+                ev.pos(),
+                self._eraser_brush_px,
+                self._eraser_brush_shape,
+                self._eraser_brush_aspect,
             )
             if self._eraser_path is not None:
                 # Decimate: skip points too close together for efficiency
@@ -844,9 +871,8 @@ class EmbeddedViewer(gl.GLViewWidget):
 # Projection helpers (used by main_window for crop math against the full cloud)
 # ---------------------------------------------------------------------------
 
-def project_points(
-    points_xyz: np.ndarray, mvp: np.ndarray, width: int, height: int
-) -> tuple[np.ndarray, np.ndarray]:
+
+def project_points(points_xyz: np.ndarray, mvp: np.ndarray, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
     """Project Nx3 world points to widget pixels.
 
     Returns (Nx2 pixel coords, mask of points in front of the camera)."""
@@ -876,11 +902,7 @@ def mask_points_in_rect(
     px_py, in_front = project_points(points_xyz, mvp, width, height)
     x0, y0 = float(rect.left()), float(rect.top())
     x1, y1 = float(rect.right()), float(rect.bottom())
-    return (
-        in_front
-        & (px_py[:, 0] >= x0) & (px_py[:, 0] <= x1)
-        & (px_py[:, 1] >= y0) & (px_py[:, 1] <= y1)
-    )
+    return in_front & (px_py[:, 0] >= x0) & (px_py[:, 0] <= x1) & (px_py[:, 1] >= y0) & (px_py[:, 1] <= y1)
 
 
 def mask_points_in_brush(

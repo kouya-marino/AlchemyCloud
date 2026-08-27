@@ -1,4 +1,5 @@
 """Reusable Qt widgets for the LiDAR PCD App."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -101,6 +102,7 @@ class ToggleSwitch(QtWidgets.QAbstractButton):
 # ---------------------------------------------------------------------------
 # Colorbar legend (RViz-style)
 # ---------------------------------------------------------------------------
+
 
 class ColorbarLegend(QtWidgets.QWidget):
     """A vertical viridis (or arbitrary matplotlib) colorbar with min/mid/max
@@ -206,12 +208,13 @@ class ColorbarLegend(QtWidgets.QWidget):
         for frac, val in ticks:
             ty = bar_y + frac * bar_h
             p.setPen(QtGui.QPen(QtGui.QColor(210, 210, 210), 1))
-            p.drawLine(QtCore.QPointF(bar_x + self.BAR_WIDTH, ty),
-                       QtCore.QPointF(bar_x + self.BAR_WIDTH + 3, ty))
+            p.drawLine(QtCore.QPointF(bar_x + self.BAR_WIDTH, ty), QtCore.QPointF(bar_x + self.BAR_WIDTH + 3, ty))
             p.setPen(QtGui.QColor(235, 235, 235))
             text_rect = QtCore.QRectF(
-                bar_x + self.BAR_WIDTH + 5, ty - 8,
-                self.width() - bar_x - self.BAR_WIDTH - 5, 16,
+                bar_x + self.BAR_WIDTH + 5,
+                ty - 8,
+                self.width() - bar_x - self.BAR_WIDTH - 5,
+                16,
             )
             p.drawText(text_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, f"{val:.2f}")
 

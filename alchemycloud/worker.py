@@ -7,6 +7,7 @@ event loop — that's what keeps the loading spinner animating smoothly.
 Signals are emitted via a separate `QObject` (`WorkerSignals`) because
 `QRunnable` is not a `QObject` in Qt.
 """
+
 from __future__ import annotations
 
 import traceback
