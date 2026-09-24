@@ -10,6 +10,26 @@ numbers and groupings mirror the curated overview in
 ## [Unreleased]
 
 ### Added
+- **Home-pose marker on the occupancy preview.** The preview drew the grid and
+  nothing else, so there was no way to see where the robot's start pose landed
+  before exporting. A cyan crosshair now marks world **(0, 0)** — the pose
+  "Apply Marker as Origin" creates — and the status line reports the pixel it
+  falls on and the cell value underneath, flagged red when that is UNKNOWN,
+  OCCUPIED, or off the map entirely.
+
+  Worth stating plainly because the two are easy to conflate: the YAML
+  ``origin`` is the world position of the image's lower-left *corner*, not
+  home. On the survey this came from, ``origin`` is (-50.081, -28.444) while
+  home sits at pixel (1001, 2996) — and lands on an UNKNOWN cell, meaning a nav
+  stack localising at (0, 0) would start in grey. That is exactly the kind of
+  thing the overlay makes obvious and the old preview could not show at all.
+
+  The marker is drawn *after* the pixmap is scaled to the label, at a fixed
+  pixel size: painting it on the full-resolution grid first would shrink it
+  along with everything else and it would vanish on a 2275 x 3566 map scaled
+  into a 480 px panel. It is preview-only — the exported PGM keeps exactly its
+  three map_server values, which a test asserts.
+
 - **Marker Z, and a "Snap Z to floor" button.** `transform_to_marker_frame`
   always subtracted all three components, so applying the marker could already
   re-origin Z — there was simply no way to set it. The marker's Z was pinned at
