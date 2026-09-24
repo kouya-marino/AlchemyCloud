@@ -308,6 +308,21 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
 
         self._worker_ref = run_async(work, on_success=on_success, on_error=on_error, on_finished=on_finished)
 
+    @staticmethod
+    def home_pixel(grid: occupancy.OccupancyGrid) -> tuple[float, float]:
+        """Image (col, row) of world (0, 0) — the robot's home pose.
+
+        Not the same thing as the YAML ``origin``, which is the world position
+        of the image's lower-left *corner*. Home is where "Apply Marker as
+        Origin" puts the robot, and on a map whose SLAM origin sits outside the
+        surveyed floor it can land in unknown space — worth seeing before export.
+        """
+        ox, oy, _ = grid.origin
+        res = grid.resolution
+        col = (0.0 - ox) / res - 0.5
+        row = (grid.height - 1) - ((0.0 - oy) / res - 0.5)
+        return col, row
+
     def _update_preview_pixmap(self, grid: occupancy.OccupancyGrid):
         img_u8 = np.ascontiguousarray(grid.image, dtype=np.uint8)
         h, w = img_u8.shape
@@ -315,6 +330,29 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         pix = QtGui.QPixmap.fromImage(qimg)
         lbl = self.preview_label
         scaled = pix.scaled(lbl.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation)
+
+        # Home marker is drawn AFTER scaling, at a fixed pixel size. Drawing it
+        # on the full-resolution map first would shrink it with everything else
+        # — on a 2275 x 3566 grid scaled into a 480 px label it would vanish.
+        col, row = self.home_pixel(grid)
+        if 0 <= col < w and 0 <= row < h and scaled.width() > 0:
+            sx = col * scaled.width() / w
+            sy = row * scaled.height() / h
+            painter = QtGui.QPainter(scaled)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            arm = 9.0
+            # Dark halo first so the cross survives on white (free) areas, then
+            # cyan on top — the map is strictly 0/205/254 grey, so a saturated
+            # hue cannot be mistaken for map content.
+            for colour, width in ((QtGui.QColor(0, 0, 0, 200), 4.0), (QtGui.QColor(0, 229, 255), 2.0)):
+                pen = QtGui.QPen(colour, width)
+                pen.setCapStyle(QtCore.Qt.RoundCap)
+                painter.setPen(pen)
+                painter.drawLine(QtCore.QPointF(sx - arm, sy), QtCore.QPointF(sx + arm, sy))
+                painter.drawLine(QtCore.QPointF(sx, sy - arm), QtCore.QPointF(sx, sy + arm))
+                painter.drawEllipse(QtCore.QPointF(sx, sy), arm * 0.45, arm * 0.45)
+            painter.end()
+
         lbl.setPixmap(scaled)
 
     def _update_status(self, grid: occupancy.OccupancyGrid):
@@ -322,9 +360,26 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         occ = float((img == occupancy.OCC).mean() * 100)
         free = float((img == occupancy.FREE).mean() * 100)
         unk = float((img == occupancy.UNKNOWN).mean() * 100)
+        col, row = self.home_pixel(grid)
+        if 0 <= col < grid.width and 0 <= row < grid.height:
+            value = int(img[int(round(row)), int(round(col))])
+            where = {occupancy.OCC: "OCCUPIED", occupancy.FREE: "free", occupancy.UNKNOWN: "UNKNOWN"}.get(
+                value, str(value)
+            )
+            note = f"home (0,0) at px {int(col)},{int(row)} — on {where}"
+            # A home in unknown or occupied space is a real problem: the robot
+            # would localise into grey, or inside an obstacle.
+            colour = "#888" if value == occupancy.FREE else "#d66"
+        else:
+            note = "home (0,0) is OUTSIDE the map — apply the marker first"
+            colour = "#d66"
+
+        # <br>, not \n: the span puts QLabel into rich-text mode, where a
+        # literal newline is collapsed like any other whitespace.
         self.status_label.setText(
-            f"{grid.width}×{grid.height} cells @ {grid.resolution:.3f} m\n"
-            f"occupied {occ:.2f}% · free {free:.2f}% · unknown {unk:.2f}%"
+            f"{grid.width}×{grid.height} cells @ {grid.resolution:.3f} m<br>"
+            f"occupied {occ:.2f}% · free {free:.2f}% · unknown {unk:.2f}%<br>"
+            f"<span style='color:{colour};'>{note}</span>"
         )
 
     # -- save --------------------------------------------------------------
