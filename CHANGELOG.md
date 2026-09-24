@@ -9,7 +9,48 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Marker Z, and a "Snap Z to floor" button.** `transform_to_marker_frame`
+  always subtracted all three components, so applying the marker could already
+  re-origin Z — there was simply no way to set it. The marker's Z was pinned at
+  0 by every path: `reset_marker` zeroes it, `_fit_marker` only sizes the
+  glyph, the canvas drag deliberately moves *on* the marker's current Z plane,
+  and the typed-coordinate handler read only X and Y. `set_marker_position`
+  even accepted a `z` that nothing ever passed. The new spin box closes that,
+  clamped to the cloud's Z bounds with the same "never clamp the marker out of
+  reach" guard as X/Y. Use it to put the origin at the robot's base height
+  rather than on the floor; **Snap Z to floor** fills it from the constrained
+  RANSAC fit for the floor-at-zero case.
+
+- **Manual tilt trim: `Measure tilt`, `roll°`/`pitch°` and `Apply trim`** on the
+  Tools toolbar, backed by `pcd_ops.apply_tilt()` and `pcd_ops.surface_tilt()`.
+
+  Level Ground aligns the *dominant* plane and stops, which is not always
+  enough. On a 180 m survey its floor and ceiling were measured 2.74° apart —
+  they are not parallel, so **no single rigid rotation can level both**;
+  flattening the floor necessarily tilts the ceiling. And even a 0.2° residual
+  is 64 cm of height drift corner to corner on a site that size, which drags a
+  costmap Z-slab across the map. **Measure tilt** reports both surfaces and
+  says outright whether one rotation can fix them; the trim then lets the
+  operator settle the compromise by eye.
+
+  `apply_tilt` rotates about the cloud's **centroid**, not the world origin, so
+  a survey sitting 150 m out stays where the camera is looking instead of
+  swinging through space. (A rigid rotation cannot change a point set's extent
+  whichever centre is used — only its position.) The spin boxes reset to zero
+  after applying, so repeated clicks cannot silently compound the same
+  rotation.
+
+### Fixed
+- **`surface_tilt`'s plane fit was degenerate on exactly the surfaces it
+  measures.** Selecting a surface by a narrow Z-percentile window cuts a thin
+  *stripe* across a tilted plane — the more tilted, the thinner — and the
+  least-squares normal of a stripe is meaningless. It under-reported a known
+  3.0° slab as 0.72°. The seed window is now wide, and the selection then
+  iterates to follow the fitted plane rather than a horizontal slice. Caught by
+  the tests written alongside it, which is also why the first measurements of
+  the survey above (floor 4.66°, ceiling 0.75°) were wrong; the corrected
+  figures are 1.59° and 1.93°.
 
 ## [1.3.0] — 2026-08-27
 
