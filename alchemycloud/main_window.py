@@ -327,6 +327,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.marker_y_spin.valueChanged.connect(self._on_marker_coord_entered)
         marker_tb.addWidget(self.marker_y_spin)
 
+        marker_tb.addWidget(QtWidgets.QLabel(" Z:"))
+        self.marker_z_spin = QtWidgets.QDoubleSpinBox()
+        self.marker_z_spin.setDecimals(3)
+        self.marker_z_spin.setSingleStep(0.05)
+        self.marker_z_spin.setRange(-1e6, 1e6)
+        self.marker_z_spin.setKeyboardTracking(False)
+        self.marker_z_spin.setToolTip(
+            "Marker Z (m). Applying the marker subtracts this, so the chosen height "
+            "becomes z = 0 — use it to put the origin at the robot's base height "
+            "rather than at the floor."
+        )
+        self.marker_z_spin.valueChanged.connect(self._on_marker_coord_entered)
+        marker_tb.addWidget(self.marker_z_spin)
+
+        self._a_snap_z = marker_tb.addAction("Snap Z to floor", self.action_snap_marker_z)
+        self._a_snap_z.setToolTip(
+            "Set marker Z to the detected floor height under the marker, so applying "
+            "the marker lands the floor on z = 0."
+        )
+
         marker_tb.addWidget(QtWidgets.QLabel(" θ°:"))
         self.marker_yaw_spin = QtWidgets.QDoubleSpinBox()
         self.marker_yaw_spin.setDecimals(1)
@@ -409,6 +429,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.eraser_aspect_spin.valueChanged.connect(self._on_eraser_aspect_changed)
         tools_tb.addWidget(self.eraser_aspect_spin)
 
+        tools_tb.addSeparator()
+
+        # Manual tilt trim. Level Ground aligns the dominant plane and stops;
+        # when a floor and a ceiling disagree there is no single rotation that
+        # levels both, and the remaining call belongs to the operator.
+        self._a_measure_tilt = tools_tb.addAction("Measure tilt", self.action_measure_tilt)
+        self._a_measure_tilt.setToolTip(
+            "Report floor and ceiling tilt separately, and whether one rotation can "
+            "level both. If they disagree, auto-levelling only moves the problem."
+        )
+        tools_tb.addWidget(QtWidgets.QLabel(" roll°:"))
+        self.tilt_roll_spin = QtWidgets.QDoubleSpinBox()
+        self.tilt_roll_spin.setDecimals(3)
+        self.tilt_roll_spin.setSingleStep(0.05)
+        self.tilt_roll_spin.setRange(-45.0, 45.0)
+        self.tilt_roll_spin.setKeyboardTracking(False)
+        self.tilt_roll_spin.setToolTip("Rotation about +X, in degrees. Positive lifts +Y.")
+        tools_tb.addWidget(self.tilt_roll_spin)
+
+        tools_tb.addWidget(QtWidgets.QLabel(" pitch°:"))
+        self.tilt_pitch_spin = QtWidgets.QDoubleSpinBox()
+        self.tilt_pitch_spin.setDecimals(3)
+        self.tilt_pitch_spin.setSingleStep(0.05)
+        self.tilt_pitch_spin.setRange(-45.0, 45.0)
+        self.tilt_pitch_spin.setKeyboardTracking(False)
+        self.tilt_pitch_spin.setToolTip("Rotation about +Y, in degrees. Positive lifts -X.")
+        tools_tb.addWidget(self.tilt_pitch_spin)
+
+        self._a_tilt_trim = tools_tb.addAction("Apply trim", self.action_tilt_trim)
+        self._a_tilt_trim.setToolTip(
+            "Rotate the cloud by the roll/pitch above, about its own centroid so it "
+            "stays where the camera is looking. Undoable; the boxes reset to zero "
+            "afterwards so repeated clicks do not compound."
+        )
+
         self.addToolBarBreak()
         occ_tb = self.addToolBar("Occupancy")
         occ_tb.setObjectName("OccupancyToolbar")
@@ -443,6 +498,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._a_apply_marker,
             self._a_zslab,
             self._a_eraser,
+            self._a_snap_z,
+            self._a_measure_tilt,
+            self._a_tilt_trim,
         ):
             a.setEnabled(enable_action)
         for a in getattr(self, "_menu_actions", []):
@@ -465,10 +523,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.slab_high_spin.setEnabled(enable_action)
         self.eraser_size_spin.setEnabled(enable_action)
         self.eraser_shape_combo.setEnabled(enable_action)
+        self.tilt_roll_spin.setEnabled(enable_action)
+        self.tilt_pitch_spin.setEnabled(enable_action)
         # The aspect spin is only meaningful for Rectangle; keep it gated on
         # both the global enable AND the current shape selection.
         self.eraser_aspect_spin.setEnabled(enable_action and self.eraser_shape_combo.currentText() == "Rectangle")
-        for spin in (self.marker_x_spin, self.marker_y_spin, self.marker_yaw_spin):
+        for spin in (
+            self.marker_x_spin,
+            self.marker_y_spin,
+            self.marker_z_spin,
+            self.marker_yaw_spin,
+        ):
             spin.setEnabled(enable_action)
 
         if has:
@@ -480,7 +545,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # latter, a marker placed outside the cloud bbox — legitimate, e.g.
             # a robot start pose just outside the scanned area — was pulled
             # inside the moment setRange ran, so editing yaw alone teleported it.
-            mx, my, _ = self.viewer.marker_position()
+            mx, my, mz = self.viewer.marker_position()
             for spin, lo, hi in (
                 (
                     self.marker_x_spin,
@@ -491,6 +556,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.marker_y_spin,
                     min(float(s.min_bound[1]), 0.0, my),
                     max(float(s.max_bound[1]), 0.0, my),
+                ),
+                (
+                    self.marker_z_spin,
+                    min(float(s.min_bound[2]), 0.0, mz),
+                    max(float(s.max_bound[2]), 0.0, mz),
                 ),
             ):
                 spin.blockSignals(True)
@@ -886,6 +956,88 @@ class MainWindow(QtWidgets.QMainWindow):
             reset_marker=True,  # the marker *became* the origin
         )
 
+    def action_snap_marker_z(self):
+        """Set marker Z to the floor height, so Apply lands the floor on z = 0.
+
+        Uses the same constrained RANSAC as Level Ground, so it inherits the
+        near-horizontal guard and will refuse rather than snap to a wall.
+        """
+        if self.current_pcd is None or self._busy:
+            return
+        cur = self.current_pcd
+
+        # The RANSAC fit is the slow part, so run it off the main thread.
+        def fit():
+            n, d = pcd_ops.fit_ground_plane(cur)
+            mx, my, _mz = self.viewer.marker_position()
+            # Height of the plane directly under the marker: n·p + d = 0.
+            z = -(d + n[0] * mx + n[1] * my) / n[2]
+            return float(z), float(np.degrees(np.arccos(float(np.clip(n[2], -1.0, 1.0)))))
+
+        def done(result):
+            z, tilt = result
+            mx, my, _ = self.viewer.marker_position()
+            self.viewer.set_marker_position(mx, my, z)
+            self.statusBar().showMessage(
+                f"Marker Z snapped to the floor at z = {z:.3f} m "
+                f"(plane tilt {tilt:.2f}°). Apply Marker as Origin to land it on 0.",
+                8000,
+            )
+
+        self._run_async(fit, done, message="Fitting the floor…", error_title="Snap Z failed")
+
+    def action_tilt_trim(self):
+        """Apply the typed roll/pitch trim to the cloud."""
+        if self.current_pcd is None or self._busy:
+            return
+        roll = float(self.tilt_roll_spin.value())
+        pitch = float(self.tilt_pitch_spin.value())
+        if abs(roll) < 1e-9 and abs(pitch) < 1e-9:
+            self.statusBar().showMessage("Roll and pitch are both zero — nothing to apply.", 4000)
+            return
+        cur = self.current_pcd
+        self._apply_async(
+            "Tilt trim",
+            lambda: pcd_ops.apply_tilt(cur, roll, pitch),
+            message=f"Tilting roll {roll:+.2f}° pitch {pitch:+.2f}°…",
+        )
+        # A trim is a nudge, not a setting; zero the boxes so repeated clicks
+        # do not silently compound the same rotation.
+        for spin in (self.tilt_roll_spin, self.tilt_pitch_spin):
+            spin.blockSignals(True)
+            spin.setValue(0.0)
+            spin.blockSignals(False)
+
+    def action_measure_tilt(self):
+        """Report floor vs ceiling tilt, and whether one rotation can fix both."""
+        if self.current_pcd is None or self._busy:
+            return
+        cur = self.current_pcd
+
+        def work():
+            nf, tf, cf = pcd_ops.surface_tilt(cur, percentile=2.0)
+            nc, tc, cc = pcd_ops.surface_tilt(cur, percentile=98.0)
+            between = float(np.degrees(np.arccos(float(np.clip(abs(nf @ nc), -1.0, 1.0)))))
+            return tf, cf, tc, cc, between
+
+        def done(result):
+            tf, cf, tc, cc, between = result
+            if between < 2.0:
+                verdict = "consistent — Level Ground can fix both."
+            else:
+                verdict = (
+                    f"inconsistent by {between:.2f}° — no single rotation levels both. "
+                    "Level the surface you care about, then trim by eye."
+                )
+            self._warn(
+                "Tilt measurement",
+                f"Floor  ({cf:,} pts):  {tf:.2f}° from horizontal\n"
+                f"Ceiling ({cc:,} pts):  {tc:.2f}° from horizontal\n\n"
+                f"They disagree by {between:.2f}°.\n\n{verdict}",
+            )
+
+        self._run_async(work, done, message="Measuring tilt…", error_title="Measure failed")
+
     def _on_marker_coord_entered(self, _value=None):
         """A marker X / Y / yaw spin box was edited — push it to the viewer.
         Skips while we're syncing the spins *from* a markerMoved event, which
@@ -897,8 +1049,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # yaw — reading the yaw spin afterwards would see the clobbered value.
         x = self.marker_x_spin.value()
         y = self.marker_y_spin.value()
+        z = self.marker_z_spin.value()
         yaw = np.radians(self.marker_yaw_spin.value())
-        self.viewer.set_marker_position(x, y)
+        self.viewer.set_marker_position(x, y, z)
         self.viewer.set_marker_yaw(yaw)
 
     def _on_marker_moved(self, x: float, y: float, z: float, yaw_deg: float):
@@ -911,6 +1064,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for spin, val in (
             (self.marker_x_spin, x),
             (self.marker_y_spin, y),
+            (self.marker_z_spin, z),
             (self.marker_yaw_spin, yaw_deg),
         ):
             spin.blockSignals(True)

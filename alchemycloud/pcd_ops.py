@@ -350,6 +350,111 @@ def level_ground(
     return out, plane_before, tilt_deg
 
 
+def surface_tilt(
+    pcd: o3d.geometry.PointCloud,
+    percentile: float,
+    band: float = 0.30,
+) -> tuple[np.ndarray, float, int]:
+    """Tilt of a horizontal surface selected by height percentile.
+
+    ``percentile`` picks which surface: a low value (say 2) lands on the floor,
+    a high one (98) on the ceiling. Returns ``(unit_normal, tilt_degrees,
+    n_points)``.
+
+    Useful because a floor and a ceiling that disagree cannot both be levelled
+    by one rigid rotation, and knowing the disagreement up front tells you
+    whether auto-levelling will help or just move the problem. On a real
+    survey this measured floor 4.66 deg against ceiling 0.75 deg — a 4.13 deg
+    inconsistency that no single rotation can remove.
+    """
+    pts = np.asarray(pcd.points)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if len(pts) < 3:
+        raise ValueError("Need at least 3 finite points to measure a surface.")
+
+    def fit(sel: np.ndarray) -> tuple[np.ndarray, float]:
+        """Total-least-squares plane; the smallest singular direction is the normal."""
+        centre = sel.mean(axis=0)
+        _u, _s, vt = np.linalg.svd(sel - centre, full_matrices=False)
+        nrm = vt[2] / np.linalg.norm(vt[2])
+        if nrm[2] < 0:
+            nrm = -nrm
+        return nrm, float(-nrm @ centre)
+
+    # Seed on a horizontal slice. A *wide* one on purpose: a tilted surface
+    # spans Z by itself, so a narrow percentile window cuts a thin stripe across
+    # it and the plane fit on that stripe is degenerate — which is exactly the
+    # case this function exists to measure.
+    z = pts[:, 2]
+    lo = np.percentile(z, max(percentile - 12.0, 0.0))
+    hi = np.percentile(z, min(percentile + 12.0, 100.0))
+    sel = pts[(z >= lo) & (z <= hi)]
+    if len(sel) < 3:
+        sel = pts
+
+    n, d = fit(sel)
+    # Then let the selection follow the fitted plane rather than a Z slice, so
+    # the whole tilted surface is recovered. Converges in a couple of passes.
+    for _ in range(4):
+        keep = np.abs(pts @ n + d) <= band
+        if keep.sum() < max(3, len(pts) // 1000):
+            break
+        n_new, d_new = fit(pts[keep])
+        if abs(float(n_new @ n)) > 1.0 - 1e-9:
+            n, d = n_new, d_new
+            break
+        n, d = n_new, d_new
+        sel = pts[keep]
+
+    tilt = float(np.degrees(np.arccos(float(np.clip(n[2], -1.0, 1.0)))))
+    return n, tilt, int(np.abs(pts @ n + d).__le__(band).sum())
+
+
+def apply_tilt(
+    pcd: o3d.geometry.PointCloud,
+    roll_deg: float,
+    pitch_deg: float,
+    about: str = "centroid",
+) -> o3d.geometry.PointCloud:
+    """Rotate the cloud by `roll_deg` about +X then `pitch_deg` about +Y.
+
+    A manual trim for what RANSAC cannot settle. ``level_ground`` aligns the
+    *dominant* plane and stops; when a floor and ceiling disagree, or when a
+    0.2 deg residual still drags a costmap slab across the map (0.2 deg over a
+    180 m site is 64 cm of height drift corner to corner), the remaining
+    correction is a judgement call the operator has to make by eye.
+
+    Rotation is about the cloud's centroid by default, not the world origin.
+    This does not change the cloud's shape or its Z extent — a rigid rotation
+    cannot — but it keeps the cloud where the camera is already looking instead
+    of swinging it through space, which matters when the survey sits 150 m from
+    the origin. Pass ``about="origin"`` for the raw rotation.
+    """
+    import copy as _copy
+
+    if about not in {"centroid", "origin"}:
+        raise ValueError(f"about must be 'centroid' or 'origin', got {about!r}")
+
+    r, p = float(np.radians(roll_deg)), float(np.radians(pitch_deg))
+    cr, sr = np.cos(r), np.sin(r)
+    cp, sp = np.cos(p), np.sin(p)
+    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=np.float64)
+    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=np.float64)
+    R = Ry @ Rx
+
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = R
+    if about == "centroid":
+        pts = np.asarray(pcd.points)
+        c = pts[np.isfinite(pts).all(axis=1)].mean(axis=0) if len(pts) else np.zeros(3)
+        T[:3, 3] = c - R @ c
+
+    out = _copy.deepcopy(pcd)
+    if not np.allclose(T, np.eye(4)):
+        out.transform(T)
+    return out
+
+
 def display_downsample(
     pcd: o3d.geometry.PointCloud, max_points: int = 500_000, seed: int = 0
 ) -> o3d.geometry.PointCloud:
