@@ -626,6 +626,52 @@ class EmbeddedViewer(gl.GLViewWidget):
         )
         self._scatter.setData(pos=pts, color=rgba, size=self._point_size, pxMode=True)
 
+    def display_point_count(self) -> int:
+        """Points in the display clone (≤ DISPLAY_MAX when LOD is on)."""
+        return 0 if self._display_pcd is None else len(self._display_pcd.points)
+
+    def remove_display_points(self, remove_fn) -> int:
+        """Hide display points for which ``remove_fn(points_xyz_float64)`` is
+        True, without re-sampling or re-preparing the cloud. Returns how many
+        were hidden.
+
+        This is the instant half of an eraser / crop edit: the main window
+        calls it on the GUI thread so the stroke vanishes immediately, then
+        applies the *same* `remove_fn` to the full cloud on a worker. The
+        display clone holds exact copies of source points (random subset or a
+        deep copy), so both sides classify every shared point identically.
+        Because the display is a uniform random sample, removing a region
+        leaves the remaining density unchanged — no re-sample is needed.
+        """
+        if self._display_pcd is None or len(self._display_pcd.points) == 0:
+            return 0
+        hit = np.asarray(remove_fn(np.asarray(self._display_pcd.points)), dtype=bool)
+        n_hit = int(hit.sum())
+        if n_hit == 0:
+            return 0
+        if self._cached_pts is None or self._cached_rgba is None:
+            self._rebuild_color_cache()
+        keep_idx = np.flatnonzero(~hit)
+        self._display_pcd = pcd_ops.select_by_indices(self._display_pcd, keep_idx)
+        if self._source_rgb is not None and len(self._source_rgb) == len(hit):
+            self._source_rgb = np.take(self._source_rgb, keep_idx, axis=0)
+        if self._cached_pts is not None and len(self._cached_pts) == len(hit):
+            self._cached_pts = np.take(self._cached_pts, keep_idx, axis=0)
+            self._cached_rgba = np.take(self._cached_rgba, keep_idx, axis=0)
+        else:  # cache out of step with the display — rebuild from scratch
+            self._cached_pts = None
+            self._cached_rgba = None
+        if len(keep_idx) == 0:
+            self._scatter.setData(
+                pos=np.zeros((0, 3), dtype=np.float32),
+                color=np.zeros((0, 4), dtype=np.float32),
+            )
+        else:
+            slab_mask = self._compute_slab_mask() if self._slab_visible else None
+            self._refresh_scatter_colors(slab_mask=slab_mask)
+        self.update()
+        return n_hit
+
     # -- Eraser tool ------------------------------------------------------
 
     def set_eraser_mode(self, on: bool) -> None:
@@ -1032,18 +1078,35 @@ def project_points(points_xyz: np.ndarray, mvp: np.ndarray, width: int, height: 
     """Project Nx3 world points to widget pixels.
 
     Returns (Nx2 pixel coords, mask of points in front of the camera)."""
-    n = points_xyz.shape[0]
-    pts4 = np.empty((n, 4), dtype=np.float64)
-    pts4[:, :3] = points_xyz
-    pts4[:, 3] = 1.0
-    clip = pts4 @ mvp.T
-    w = clip[:, 3]
-    in_front = w > 1e-9
-    w_safe = np.where(in_front, w, 1.0)
-    ndc = clip[:, :3] / w_safe[:, None]
-    px = (ndc[:, 0] + 1.0) * (width / 2.0)
-    py = (1.0 - ndc[:, 1]) * (height / 2.0)
+    px, py, in_front = _project_columns(points_xyz, mvp, width, height)
     return np.column_stack([px, py]), in_front
+
+
+def _project_columns(
+    points_xyz: np.ndarray, mvp: np.ndarray, width: int, height: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project to pixels as separate (px, py, in_front) columns.
+
+    Only the x, y and w rows of the MVP are evaluated (clip z is never used),
+    as plain element-wise float64 arithmetic — no matmul. That is ~2-3x faster
+    than the old ``(N,4) @ mvp.T`` and, more importantly, each point's result
+    depends only on that point: BLAS may reorder a matmul's summation by array
+    size or alignment, so the same point could round to a different pixel in
+    the display subset than in the full cloud. The eraser hides points on the
+    display optimistically and removes them from the full cloud on a worker,
+    and the two must agree point for point or a ghost point is left on screen.
+    """
+    p = np.asarray(points_xyz, dtype=np.float64)
+    m = np.asarray(mvp, dtype=np.float64)
+    x, y, z = p[:, 0], p[:, 1], p[:, 2]
+    cx = x * m[0, 0] + y * m[0, 1] + z * m[0, 2] + m[0, 3]
+    cy = x * m[1, 0] + y * m[1, 1] + z * m[1, 2] + m[1, 3]
+    cw = x * m[3, 0] + y * m[3, 1] + z * m[3, 2] + m[3, 3]
+    in_front = cw > 1e-9
+    w_safe = np.where(in_front, cw, 1.0)
+    px = (cx / w_safe + 1.0) * (width / 2.0)
+    py = (1.0 - cy / w_safe) * (height / 2.0)
+    return px, py, in_front
 
 
 def mask_points_in_rect(
@@ -1055,10 +1118,10 @@ def mask_points_in_rect(
 ) -> np.ndarray:
     """Return a boolean mask of which points project inside `rect` and are in
     front of the camera."""
-    px_py, in_front = project_points(points_xyz, mvp, width, height)
+    px, py, in_front = _project_columns(points_xyz, mvp, width, height)
     x0, y0 = float(rect.left()), float(rect.top())
     x1, y1 = float(rect.right()), float(rect.bottom())
-    return in_front & (px_py[:, 0] >= x0) & (px_py[:, 0] <= x1) & (px_py[:, 1] >= y0) & (px_py[:, 1] <= y1)
+    return in_front & (px >= x0) & (px <= x1) & (py >= y0) & (py <= y1)
 
 
 def mask_points_in_brush(
@@ -1071,11 +1134,11 @@ def mask_points_in_brush(
     """Return (mask, in_front). `canvas_mask` is a (H, W) bool image marking
     which pixels are "painted" by the eraser brush. `mask` is True for each
     cloud point whose 2D projection falls onto a True pixel of `canvas_mask`."""
-    px_py, in_front = project_points(points_xyz, mvp, width, height)
+    px_f, py_f, in_front = _project_columns(points_xyz, mvp, width, height)
     if not in_front.any():
         return np.zeros(len(points_xyz), dtype=bool), in_front
-    px = np.round(px_py[:, 0]).astype(np.int64)
-    py = np.round(px_py[:, 1]).astype(np.int64)
+    px = np.round(px_f).astype(np.int64)
+    py = np.round(py_f).astype(np.int64)
     valid = in_front & (px >= 0) & (px < width) & (py >= 0) & (py < height)
     out = np.zeros(len(points_xyz), dtype=bool)
     idx = np.where(valid)[0]

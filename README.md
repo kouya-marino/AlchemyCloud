@@ -410,6 +410,7 @@ What's covered (109 tests, ~2 s):
 | `tests/test_occupancy_geometry.py` | Map **geometry**: an asymmetric obstacle round-tripped through `(pixel, origin, resolution)` under both methods, PGM/YAML metadata, `voxel3d` hole-freeness, non-finite and oversize-grid handling, writer edge cases. |
 | `tests/test_rgb_view.py` | The RGB colour mode: source-colour passthrough, tone mapping, the RGB → Z → RGB round trip, toolbar gating. |
 | `tests/test_regressions.py` | Audit fixes in the Qt layer: GL blend mode, marker survival, history/dirty state, close prompt, busy gating, preview dialog staleness. |
+| `tests/test_background_erase.py` | Eraser/crop in the background: points hidden instantly, full-cloud edit queued on a worker in stroke order, undo exactness, failure resync, display always a subset of the cloud. |
 
 GUI tests run with `QT_QPA_PLATFORM=offscreen` (set in `conftest.py`) so
 no X server is needed. The pyqtgraph "Requires >= OpenGL 2.1" lines
