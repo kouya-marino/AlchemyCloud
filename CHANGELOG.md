@@ -9,6 +9,10 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-11-25
+
+_Theme: Responsive editing & precise framing._
+
 ### Changed
 - **Eraser and Crop no longer freeze the window.** On a 1.8 M-point colour
   scan each eraser stroke locked the whole UI for ~5 s (under load): project
@@ -643,7 +647,8 @@ _Theme: Core engine & basic GUI._
 - **`README.md`** — installation, UI walkthrough, parameter reference,
   troubleshooting, programmatic-use snippet.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.0
 [1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
