@@ -108,6 +108,7 @@ under `QT_QPA_PLATFORM=offscreen` so they don't need an X server.
 | `test_rgb_view.py` | 19 | The RGB colour mode and its tone mapping |
 | `test_regressions.py` | 21 | Audit fixes in the Qt layer, one test per named defect |
 | `test_gui_smoke.py` | 10 | `MainWindow` construction and the async pipeline |
+| `test_background_erase.py` | 21 | Eraser/crop run in the background: instant display hide, ordered queue, undo, failure resync, display ⊆ cloud |
 
 Two things worth knowing before you add tests here:
 

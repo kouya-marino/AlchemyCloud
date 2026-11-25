@@ -9,6 +9,31 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+### Changed
+- **Eraser and Crop no longer freeze the window.** On a 1.8 M-point colour
+  scan each eraser stroke locked the whole UI for ~5 s (under load): project
+  every point, build a Python index list, deep-copy the cloud for undo and
+  re-sample the display, all behind the loading overlay. Now the erased points
+  vanish from the display at once (~80 ms, display LOD on) and the full-cloud
+  edit commits on a background worker. Further strokes queue up behind it in
+  order, each its own undo step, and Undo/Redo pressed mid-queue runs once it
+  drains. Other tools stay locked until then, and closing the window is
+  refused until it finishes (well under a second).
+  If a queued edit fails, or would empty the cloud, the queue is dropped and
+  the display is rebuilt from the actual cloud.
+  - Removal now uses NumPy gathers (`pcd_ops.select_by_mask` /
+    `select_by_indices`) instead of `select_by_index(list)`.
+  - The undo step stores the replaced cloud rather than a deep copy. Each step
+    is still a full cloud, so memory is unchanged; only the copy time is saved.
+  - Projection evaluates only the x/y/w rows, element-wise. Matmul is not used
+    because the display subset and the full cloud must round every shared
+    point to the same pixel.
+  - `pcd_ops.stats` uses per-column reductions and is cached per cloud, so the
+    status bar refresh no longer costs ~0.7 s on the GUI thread.
+  - With display LOD **off** the instant hide still projects the whole cloud
+    on the GUI thread (~0.5–0.9 s on 1.8 M points), still far below the old
+    7–11 s.
+
 ### Added
 - **Home-pose marker on the occupancy preview.** The preview drew the grid and
   nothing else, so there was no way to see where the robot's start pose landed

@@ -133,9 +133,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.prompt_unsaved_on_close = True
         self._busy = False
         self._busy_worker_ref = None  # keep worker alive while running
+        # Point-removal edits (eraser strokes, crop) run through their own
+        # queue so the canvas never locks: the points vanish from the display
+        # at once, the full-cloud edit runs on a worker, and further strokes
+        # queue up behind it. `_busy` stays True while the queue is active so
+        # every other action's existing `if self._busy` guard still holds.
+        self._mask_queue: list[tuple[str, object]] = []
+        self._mask_active = False
+        self._mask_worker_ref = None
+        self._mask_result = None  # ("ok", new_pcd, n_removed) | ("error", msg)
+        self._mask_base = None  # cloud the running job started from
+        self._mask_removed_total = 0
+        self._deferred_action = None  # Undo/Redo pressed mid-queue, run on drain
         # Workers whose signals we disconnected at close: held so the C++
         # QRunnable is not freed while the pool thread may still touch it.
         self._closing_worker_ref = None
+        self._closing_mask_worker_ref = None
         # Every open preview dialog, so a second "Generate Map" click cannot
         # orphan the first (which stayed on screen with a live Save button).
         self._occupancy_dialogs: list[QtWidgets.QDialog] = []
@@ -185,6 +198,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Disabled whenever a worker is running.
         self._menu_actions = [a_open, a_save, a_save_ascii, a_ply, a_map, a_undo, a_redo, a_reset, a_cam]
+        # Undo/Redo stay live while eraser strokes are queued (they defer).
+        self._menu_undo, self._menu_redo = a_undo, a_redo
         # Disabled additionally when no cloud is loaded.
         self._menu_needs_cloud = [a_save, a_save_ascii, a_ply, a_map, a_cam]
 
@@ -507,8 +522,18 @@ class MainWindow(QtWidgets.QMainWindow):
             a.setEnabled(not self._busy)
         for a in getattr(self, "_menu_needs_cloud", []):
             a.setEnabled(enable_action)
-        self._a_undo.setEnabled(bool(self.history) and not self._busy)
-        self._a_redo.setEnabled(bool(self.redo_stack) and not self._busy)
+        # While eraser/crop edits are queued, Undo/Redo stay pressable and run
+        # once the queue drains — Ctrl+Z straight after a stroke used to be the
+        # natural move, and a greyed-out button would silently swallow it.
+        can_undo = self._mask_active or (bool(self.history) and not self._busy)
+        can_redo = bool(self.redo_stack) and (self._mask_active or not self._busy)
+        self._a_undo.setEnabled(can_undo)
+        self._a_redo.setEnabled(can_redo)
+        if hasattr(self, "_menu_undo"):
+            # Menu items keep their old rule (live whenever idle) plus stay
+            # live while edits are queued, so Ctrl+Z / Ctrl+Y can defer.
+            self._menu_undo.setEnabled(not self._busy or self._mask_active)
+            self._menu_redo.setEnabled(not self._busy or self._mask_active)
         self._a_reset.setEnabled(has and self.original_pcd is not None and not self._busy)
         self.color_combo.setEnabled(enable_action)
         # The RGB tone controls do nothing outside RGB mode — gate them on it
@@ -528,6 +553,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # The aspect spin is only meaningful for Rectangle; keep it gated on
         # both the global enable AND the current shape selection.
         self.eraser_aspect_spin.setEnabled(enable_action and self.eraser_shape_combo.currentText() == "Rectangle")
+        if has and self._mask_active:
+            # The eraser keeps working while earlier strokes are committed in
+            # the background — that is the whole point of the queue.
+            self._a_eraser.setEnabled(True)
+            self.eraser_size_spin.setEnabled(True)
+            self.eraser_shape_combo.setEnabled(True)
+            self.eraser_aspect_spin.setEnabled(self.eraser_shape_combo.currentText() == "Rectangle")
         for spin in (
             self.marker_x_spin,
             self.marker_y_spin,
@@ -537,7 +569,14 @@ class MainWindow(QtWidgets.QMainWindow):
             spin.setEnabled(enable_action)
 
         if has:
-            s = pcd_ops.stats(self.current_pcd)
+            # Cached per cloud object: _refresh_state runs on every busy flip,
+            # and stats() is O(N) on the GUI thread.
+            cache = getattr(self, "_stats_cache", None)
+            if cache is not None and cache[0] is self.current_pcd:
+                s = cache[1]
+            else:
+                s = pcd_ops.stats(self.current_pcd)
+                self._stats_cache = (self.current_pcd, s)
             self.stats_label.setText(s.describe())
             # Clamp the X/Y coordinate boxes to the cloud scope, expanded to
             # always include 0.0 (so the default origin marker is
@@ -681,6 +720,165 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._run_async(wrapped, on_success, message or f"{label}…", error_title=f"{label} failed")
 
+    # -- point-removal queue (eraser strokes, crop) ---------------------------
+    #
+    # An eraser stroke on a 1.8 M-point cloud used to lock the whole window for
+    # ~2 s: project every point, build a Python index list, deep-copy the cloud
+    # for undo, re-sample the display. Now:
+    #   1. GUI thread, instantly: hide the hit points from the existing display
+    #      subset (`viewer.remove_display_points`) — no re-sample.
+    #   2. Worker, one job at a time, in stroke order: apply the same
+    #      `remove_fn` to the full cloud and build the new cloud from numpy.
+    #      Each job starts from the cloud the previous job produced.
+    #   3. GUI thread, per job: commit. The replaced cloud object goes onto the
+    #      undo stack as-is (no deep copy) — nothing mutates a cloud in place,
+    #      and it is no longer `current_pcd`.
+    # The canvas stays live throughout, and strokes made meanwhile queue up.
+
+    def _submit_mask_edit(self, label: str, remove_fn) -> None:
+        if self.current_pcd is None:
+            return
+        self.viewer.remove_display_points(remove_fn)
+        self._mask_queue.append((label, remove_fn))
+        self._dirty = True
+        if not self._mask_active:
+            self._mask_active = True
+            self._busy = True  # blocks every other action via its existing guard
+            self._mask_removed_total = 0
+            self._refresh_state()
+        if self._mask_worker_ref is None:
+            self._start_next_mask_job()
+        else:
+            self._show_mask_progress()
+
+    def _show_mask_progress(self) -> None:
+        n = len(self._mask_queue) + (1 if self._mask_worker_ref is not None else 0)
+        self.statusBar().showMessage(f"Applying edits in the background… ({n} pending)", 0)
+
+    def _start_next_mask_job(self) -> None:
+        label, remove_fn = self._mask_queue.pop(0)
+        base = self.current_pcd
+        self._mask_base = base
+        self._mask_label = label
+        self._mask_result = None
+
+        def work():
+            hit = np.asarray(remove_fn(np.asarray(base.points)), dtype=bool)
+            n = int(hit.sum())
+            if n == 0:
+                return base, 0
+            return pcd_ops.select_by_mask(base, ~hit), n
+
+        def on_success(res):
+            self._mask_result = ("ok", res[0], res[1])
+
+        def on_error(msg):
+            self._mask_result = ("error", msg)
+
+        self._mask_worker_ref = run_async(
+            work, on_success=on_success, on_error=on_error, on_finished=self._on_mask_job_finished
+        )
+        self._show_mask_progress()
+
+    def _on_mask_job_finished(self) -> None:
+        self._mask_worker_ref = None
+        res, label, base = self._mask_result, self._mask_label, self._mask_base
+        self._mask_result = None
+        self._mask_base = None
+
+        problem = None  # (title, message) when this job cannot be committed
+        if res is None or self.current_pcd is not base:
+            problem = (f"{label} failed", "The edit could not be applied.")
+        elif res[0] == "error":
+            problem = (f"{label} failed", res[1])
+        elif len(res[1].points) == 0:
+            problem = (label, "Operation produced an empty cloud — ignored.")
+        if problem is not None:
+            # The display already hides this job's points (and any queued
+            # ones). Drop the queue and rebuild the display from the cloud we
+            # actually have, so the screen never disagrees with current_pcd.
+            self._mask_queue.clear()
+            # An Undo pressed mid-queue was aimed at a history this failure
+            # just changed (later strokes were dropped), so running it now
+            # could undo a stroke the user meant to keep. Cancel it.
+            self._deferred_action = None
+            if self.current_pcd is not None:
+                self.viewer.set_cloud(self.current_pcd)
+            self._end_mask_queue()
+            self._warn(*problem)
+            return
+
+        _, new_pcd, n_removed = res
+        if n_removed:
+            self.history.append(base)  # replaced object, not a copy — see above
+            if len(self.history) > HISTORY_DEPTH:
+                self.history = self.history[-HISTORY_DEPTH:]
+            self.redo_stack.clear()
+            self.current_pcd = new_pcd
+            self._dirty = True
+            self._mask_removed_total += n_removed
+            self.cloudChanged.emit(new_pcd)
+
+        if self._mask_queue:
+            self._start_next_mask_job()
+        else:
+            self._maybe_refill_display()
+
+    def _maybe_refill_display(self) -> None:
+        """After heavy erasing the display subset can thin out (it only ever
+        loses points). If it fell below half its budget, re-sample it from the
+        current cloud on a worker; otherwise finish straight away."""
+        cur = self.current_pcd
+        n = 0 if cur is None else len(cur.points)
+        target = min(self.viewer.DISPLAY_MAX, n) if self.viewer.is_display_lod_enabled() else n
+        if n == 0 or self.viewer.display_point_count() >= 0.5 * target:
+            self._end_mask_queue()
+            return
+
+        def work():
+            return self.viewer.prepare_cloud(cur)
+
+        def on_success(prepared):
+            self._mask_result = ("refill", cur, prepared)
+
+        def on_error(msg):
+            self._mask_result = ("error", msg)
+
+        self._mask_result = None
+        self._mask_worker_ref = run_async(
+            work, on_success=on_success, on_error=on_error, on_finished=self._on_refill_finished
+        )
+
+    def _on_refill_finished(self) -> None:
+        self._mask_worker_ref = None
+        res, self._mask_result = self._mask_result, None
+        if res is not None and res[0] == "refill" and res[1] is self.current_pcd:
+            display, pts, rgba = res[2]
+            self.viewer.apply_prepared_cloud(display, pts, rgba)
+            # Strokes made while re-sampling were hidden on the old display.
+            for _, fn in self._mask_queue:
+                self.viewer.remove_display_points(fn)
+        if self._mask_queue:
+            self._start_next_mask_job()
+        else:
+            self._end_mask_queue()
+
+    def _end_mask_queue(self) -> None:
+        self._mask_active = False
+        self._busy = False
+        self._refresh_state()
+        if self._mask_removed_total and self.current_pcd is not None:
+            self.statusBar().showMessage(
+                f"Removed {self._mask_removed_total:,} points — now {len(self.current_pcd.points):,} points",
+                5000,
+            )
+        else:
+            self.statusBar().clearMessage()
+        self._mask_removed_total = 0
+        deferred, self._deferred_action = self._deferred_action, None
+        if deferred is not None:
+            deferred()
+
     def _forget_occupancy_dialog(self, dlg) -> None:
         if dlg in self._occupancy_dialogs:
             self._occupancy_dialogs.remove(dlg)
@@ -690,6 +888,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"{prefix} {saved_path}", 5000)
 
     def closeEvent(self, event):
+        # Eraser/crop edits still committing: refuse this close (they finish in
+        # well under a second) rather than prompt about, or save, a cloud that
+        # is about to change. Headless callers (no prompt) fall through and
+        # the queue is abandoned below.
+        if self._mask_active and self.prompt_unsaved_on_close:
+            self.statusBar().showMessage("Finishing pending edits — close again in a moment.", 5000)
+            event.ignore()
+            return
+
         # Unsaved edits: ask before throwing them away. There was previously no
         # dirty tracking at all, so an hour of filtering and cropping vanished
         # on close with no prompt.
@@ -740,6 +947,17 @@ class MainWindow(QtWidgets.QMainWindow):
             # still queued frees it under the pool and segfaults.
             self._closing_worker_ref = w
             self._busy_worker_ref = None
+        # Same for a running eraser/crop job; queued ones are simply dropped.
+        self._mask_queue.clear()
+        mw = self._mask_worker_ref
+        if mw is not None:
+            for sig in (mw.signals.success, mw.signals.error, mw.signals.finished):
+                try:
+                    sig.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            self._closing_mask_worker_ref = mw
+            self._mask_worker_ref = None
         super().closeEvent(event)
 
     # -- file actions ------------------------------------------------------
@@ -1145,7 +1363,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.viewer.set_eraser_aspect(value)
 
     def _on_eraser_stroke(self, path: list, brush_radius: int):
-        if self.current_pcd is None or self._busy or not path:
+        # Strokes may queue behind earlier ones; any *other* busy job blocks.
+        if self.current_pcd is None or not path or (self._busy and not self._mask_active):
             return
         from PIL import Image, ImageDraw
 
@@ -1171,24 +1390,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 draw.rectangle([x - w_half, y - r, x + w_half, y + r], fill=255)
         canvas_mask = np.array(img, dtype=np.uint8) > 0  # shape (H, W)
 
-        cur = self.current_pcd
         slab_on = self._a_zslab.isChecked()
         # Ask the viewer, not the spin boxes: it is the component that
         # normalises an inverted low/high pair, and the scope filter must match
         # the slab the user can actually see.
         z_low, z_high = self.viewer.slab_bounds()
 
-        def work():
-            pts_w = np.asarray(cur.points)
+        # Everything the stroke depends on (camera, canvas size, brush mask,
+        # slab) is captured now, so a queued stroke still erases what the user
+        # painted even if the camera moves before it runs.
+        def remove_fn(pts_w: np.ndarray) -> np.ndarray:
             in_brush, in_front = mask_points_in_brush(pts_w, mvp, w_px, h_px, canvas_mask)
             hit = in_brush & in_front
             if slab_on:
-                z_in_slab = (pts_w[:, 2] >= z_low) & (pts_w[:, 2] <= z_high)
-                hit = hit & z_in_slab
-            keep = np.where(~hit)[0]
-            return cur.select_by_index(keep.tolist())
+                hit &= (pts_w[:, 2] >= z_low) & (pts_w[:, 2] <= z_high)
+            return hit
 
-        self._apply_async("Eraser", work, message="Erasing…")
+        self._submit_mask_edit("Eraser", remove_fn)
 
     def _on_crop_requested(self, rect: QtCore.QRect):
         if self.current_pcd is None or self._busy:
@@ -1201,10 +1419,8 @@ class MainWindow(QtWidgets.QMainWindow):
         label = "Crop (keep)" if mode == "Keep inside" else "Crop (remove)"
         if slab_on:
             label += " · slab"
-        cur = self.current_pcd
 
-        def work():
-            pts = np.asarray(cur.points)
+        def remove_fn(pts: np.ndarray) -> np.ndarray:
             in_rect = mask_points_in_rect(pts, mvp, w, h, rect)
             if slab_on:
                 # Z-Slab as a scope: only in-slab points may be affected.
@@ -1212,20 +1428,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 in_slab = (pts[:, 2] >= z_low) & (pts[:, 2] <= z_high)
                 if mode == "Keep inside":
                     # Drop only in-slab points outside the rectangle.
-                    remove_mask = in_slab & ~in_rect
-                else:  # Remove inside
-                    remove_mask = in_slab & in_rect
-                keep_idx = np.where(~remove_mask)[0]
-            else:
-                keep_idx = np.where(in_rect if mode == "Keep inside" else ~in_rect)[0]
-            return cur.select_by_index(keep_idx.tolist())
+                    return in_slab & ~in_rect
+                return in_slab & in_rect  # Remove inside
+            return ~in_rect if mode == "Keep inside" else in_rect
 
         # Auto-exit crop mode whether the crop succeeds or fails — feels
         # natural for the user since the rectangle was just released.
         self._a_crop.setChecked(False)
         self.viewer.set_crop_mode(False)
 
-        self._apply_async(label, work, message=f"{label}…")
+        self._submit_mask_edit(label, remove_fn)
 
     # -- edit actions ------------------------------------------------------
 
@@ -1349,6 +1561,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_async("Level ground", work, message="Detecting ground plane…", on_extra=on_extra)
 
     def action_undo(self):
+        if self._mask_active:
+            self._deferred_action = self.action_undo
+            self.statusBar().showMessage("Undo will run as soon as the pending edits finish…", 0)
+            return
         if not self.history or self._busy:
             return
         prev = self.history.pop()
@@ -1369,6 +1585,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._run_async(work, on_success, message="Undo…")
 
     def action_redo(self):
+        if self._mask_active:
+            self._deferred_action = self.action_redo
+            self.statusBar().showMessage("Redo will run as soon as the pending edits finish…", 0)
+            return
         if not self.redo_stack or self._busy:
             return
         nxt = self.redo_stack.pop()
