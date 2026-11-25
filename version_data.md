@@ -4,7 +4,30 @@ A feature-per-version summary of the LiDAR PCD Editor & Occupancy Grid
 Exporter, from the first release to today. Newest version first. For the
 detailed, change-by-change record see [CHANGELOG.md](CHANGELOG.md).
 
-**Current version: 1.3.0**
+**Current version: 1.4.0**
+
+---
+
+## 1.4.0 — Responsive editing & precise framing *(2026-11-25)*
+
+- **Eraser and Crop no longer freeze the window** — erased points vanish from
+  the display at once and the full-cloud edit commits in the background;
+  strokes queue in order, each its own undo step. On a 1.8 M-point colour scan
+  the UI block per stroke dropped from ~5 s to under 0.1 s (display LOD on).
+- **Home-pose marker on the occupancy preview** — a crosshair at world (0, 0)
+  with the pixel and cell value underneath, flagged when it lands on UNKNOWN or
+  OCCUPIED space. Preview-only; the exported PGM is unchanged.
+- **Marker Z and "Snap Z to floor"** — the origin can now be set at any height,
+  e.g. the robot's base, not just the floor.
+- **Manual tilt trim** — `Measure tilt` reports floor and ceiling tilt and
+  whether one rotation can level both; `roll°` / `pitch°` + `Apply trim` settle
+  what RANSAC levelling leaves behind, rotating about the cloud's centroid.
+- **Fixed:** `surface_tilt` under-reported tilted surfaces (3.0° measured as
+  0.72°).
+- **CI** moved off the deprecated Node 20 action runtime.
+- **Test suite 109 → 160.**
+
+See [CHANGELOG.md](CHANGELOG.md) for the change-by-change detail.
 
 ---
 
