@@ -564,7 +564,10 @@ def colorize_by_axis(
     from matplotlib import colormaps
 
     rgba = colormaps[cmap_name](np.clip(normed, 0.0, 1.0))
-    pcd.colors = o3d.utility.Vector3dVector(rgba[:, :3])
+    # Contiguous copy is essential: Vector3dVector walks a strided view such as
+    # `rgba[:, :3]` element by element (~0.5 s for 500k points) but block-copies
+    # a contiguous (N, 3) float64 array (~8 ms).
+    pcd.colors = o3d.utility.Vector3dVector(np.ascontiguousarray(rgba[:, :3], dtype=np.float64))
     return pcd
 
 

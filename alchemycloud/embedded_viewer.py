@@ -13,6 +13,7 @@ as module-level helpers so the main window can do the crop against the full
 from __future__ import annotations
 
 import copy
+import threading
 
 import numpy as np
 import open3d as o3d
@@ -190,11 +191,14 @@ class EmbeddedViewer(gl.GLViewWidget):
         # overwrites it. None when the source cloud carries no colour. Without
         # this, switching RGB -> Z -> RGB would come back viridis, because
         # colorize_by_axis mutates `_display_pcd.colors` in place.
-        # `_pending_src_rgb` is written by prepare_cloud (worker thread) and
-        # promoted in apply_prepared_cloud (main thread), so the cached colours
-        # can never belong to a different cloud than `_display_pcd`.
         self._source_rgb: np.ndarray | None = None
-        self._pending_src_rgb: np.ndarray | None = None
+        # What prepare_cloud (worker thread) works out for the main thread,
+        # keyed by id(display): (display, src_rgb, colour_key, lo, hi).
+        # Keyed rather than a single slot because two prepares can overlap
+        # (a display refill racing a resync), and a single slot would pair
+        # one cloud with the other cloud's source colours.
+        self._pending_prepared: dict[int, tuple] = {}
+        self._pending_lock = threading.Lock()
         # RGB display tone mapping. Indoor colour scans are typically very
         # under-exposed -- a mean channel value around 0.5 is normal -- so raw
         # values render close to black. Auto-level stretches each channel to
@@ -268,7 +272,8 @@ class EmbeddedViewer(gl.GLViewWidget):
     def clear_cloud(self) -> None:
         self._display_pcd = None
         self._source_rgb = None
-        self._pending_src_rgb = None
+        with self._pending_lock:
+            self._pending_prepared.clear()
         self._cached_pts = None
         self._cached_rgba = None
         self._cached_xy_bbox = None
@@ -330,34 +335,48 @@ class EmbeddedViewer(gl.GLViewWidget):
             self._scatter.setData(size=self._point_size)
             self.update()
 
-    def _tone_map(self, cols: np.ndarray) -> np.ndarray:
+    def _tone_map(self, cols: np.ndarray, key: tuple | None = None) -> np.ndarray:
         """Apply auto-level + gamma to source RGB for display.
 
         Raw indoor colour clouds are usually under-exposed and render close to
         black, so the defaults lift them. `auto_level=False, gamma=1.0` renders
         the file's colours completely unmodified.
         """
+        _, gamma, autolevel = key if key is not None else self._color_key()
         out = np.clip(np.asarray(cols, dtype=np.float32), 0.0, 1.0)
-        if self._rgb_autolevel and len(out) > 1:
+        if autolevel and len(out) > 1:
             lo = np.percentile(out, 1.0, axis=0)
             hi = np.percentile(out, 99.0, axis=0)
             out = np.clip((out - lo) / np.maximum(hi - lo, 1e-6), 0.0, 1.0)
-        gamma = float(self._rgb_gamma)
+        gamma = float(gamma)
         if abs(gamma - 1.0) > 1e-6:
             out = out**gamma
         return out
 
-    def _resolve_colors(self, display: o3d.geometry.PointCloud, src_rgb: np.ndarray | None, n: int) -> np.ndarray:
+    def _color_key(self) -> tuple:
+        """Every setting the per-point colours depend on."""
+        return (self._color_axis, self._rgb_gamma, self._rgb_autolevel)
+
+    def _resolve_colors(
+        self,
+        display: o3d.geometry.PointCloud,
+        src_rgb: np.ndarray | None,
+        n: int,
+        key: tuple | None = None,
+    ) -> np.ndarray:
         """RGBA colour block for `n` points under the current colour mode.
 
         In "rgb" mode this is the cloud's own colour, tone-mapped; a cloud with
         no colour falls back to flat grey. In an axis mode it is whatever
-        `colorize_by_axis` just wrote.
+        `colorize_by_axis` just wrote. `key` pins the colour settings (see
+        `_color_key`); None means the current ones.
         """
-        if self._color_axis == "rgb":
+        if key is None:
+            key = self._color_key()
+        if key[0] == "rgb":
             if src_rgb is None or src_rgb.size == 0 or len(src_rgb) != n:
                 return np.full((n, 3), 0.6, dtype=np.float32)
-            return self._tone_map(src_rgb)
+            return self._tone_map(src_rgb, key)
         cols = np.asarray(display.colors, dtype=np.float32)
         if cols.size and len(cols) == n:
             return cols
@@ -369,7 +388,6 @@ class EmbeddedViewer(gl.GLViewWidget):
         """Compute the display clone + RGBA arrays. Safe to call from a
         worker thread — touches no Qt or GL state."""
         if pcd is None or len(pcd.points) == 0:
-            self._pending_src_rgb = None
             return None, np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
 
         if self._display_lod_enabled:
@@ -386,15 +404,25 @@ class EmbeddedViewer(gl.GLViewWidget):
         # under display-LOD. Promoted to `_source_rgb` in apply_prepared_cloud.
         src = np.asarray(display.colors, dtype=np.float32)
         src = src.copy() if src.size else None
-        self._pending_src_rgb = src
 
-        if self._color_axis != "rgb":
-            pcd_ops.colorize_by_axis(display, self._color_axis)
+        # Read the colour settings once, so the key recorded below is exactly
+        # what these colours were computed with even if the user changes the
+        # colour mode while this runs.
+        key = self._color_key()
+        if key[0] != "rgb":
+            pcd_ops.colorize_by_axis(display, key[0])
 
         pts = np.asarray(display.points, dtype=np.float32)
         rgba = np.empty((len(pts), 4), dtype=np.float32)
-        rgba[:, :3] = self._resolve_colors(display, src, len(pts))
+        rgba[:, :3] = self._resolve_colors(display, src, len(pts), key)
         rgba[:, 3] = 1.0
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        with self._pending_lock:
+            self._pending_prepared[id(display)] = (display, src, key, lo, hi)
+            # A prepared cloud that is never applied (worker superseded or
+            # failed) must not pin its memory forever.
+            while len(self._pending_prepared) > 4:
+                del self._pending_prepared[next(iter(self._pending_prepared))]
         return display, pts, rgba
 
     def apply_prepared_cloud(
@@ -417,42 +445,49 @@ class EmbeddedViewer(gl.GLViewWidget):
         if display is None or pts.size == 0:
             self.clear_cloud()
             return
+        with self._pending_lock:
+            slot = self._pending_prepared.pop(id(display), None)
+        if slot is not None and slot[0] is not display:
+            slot = None  # id reused by a different object -- not ours
         self._display_pcd = display
-        # Promote the source-RGB snapshot taken by prepare_cloud, so it always
-        # belongs to the cloud we are about to show.
-        self._source_rgb = self._pending_src_rgb
-        self._pending_src_rgb = None
-        # New cloud → invalidate the colour cache (rebuild on next access).
-        self._cached_pts = None
-        self._cached_rgba = None
         self._cached_xy_bbox = None
-        # Explicit clear-then-set to force a clean VBO reallocation. Without
-        # this, pyqtgraph 0.14 has been observed to leave the old (smaller)
-        # colour VBO behind when the point count grows, so extra vertices
-        # read past the buffer and end up drawn with the shader's default
-        # constant colour (white). Clearing first guarantees both pos and
-        # colour buffers are freshly allocated at the new size.
-        self._scatter.setData(
-            pos=np.zeros((0, 3), dtype=np.float32),
-            color=np.zeros((0, 4), dtype=np.float32),
-        )
-        self._scatter.setData(pos=pts, color=rgba, size=self._point_size, pxMode=True)
-        self._fit_grid(pts)
+        if slot is None:
+            # Not produced by prepare_cloud, so its source RGB is unknown (the
+            # colours may already be an axis colormap): rebuild from scratch.
+            self._source_rgb = None
+            self._cached_pts = None
+            self._cached_rgba = None
+            lo, hi = pts.min(axis=0), pts.max(axis=0)
+        else:
+            _, self._source_rgb, key, lo, hi = slot
+            if key == self._color_key():
+                # Reuse what the worker already computed. Rebuilding here used
+                # to re-run colorize_by_axis on the GUI thread for every
+                # operation (~0.5 s on a 500k-point display).
+                self._cached_pts = pts
+                self._cached_rgba = rgba
+            else:
+                # The colour mode changed while the worker ran: its colours
+                # are stale, so recompute them for the current mode.
+                self._cached_pts = None
+                self._cached_rgba = None
+        slab_mask = self._compute_slab_mask() if self._slab_visible else None
+        # Uploads with the explicit clear-then-set VBO reallocation (see
+        # _refresh_scatter_colors).
+        self._refresh_scatter_colors(slab_mask=slab_mask)
+        self._fit_grid(lo, hi)
         # Rescaling the marker glyph to the new extent is always harmless;
         # zeroing its pose is not (see the docstring).
-        self._fit_marker(pts)
+        self._fit_marker(lo, hi)
         if reset_marker:
             self.reset_marker()
-        else:
-            self._refresh_marker_geometry()
         self._update_legend_range()
-        # If Z-Slab editor was open, recompute its geometry/preview against
-        # the new cloud (bounds are kept; main window may reset them).
+        # If Z-Slab editor was open, recompute its geometry against the new
+        # cloud (bounds are kept; main window may reset them).
         if self._slab_visible:
             self._refresh_slab_geometry()
-            self._refresh_scatter_colors(slab_mask=self._compute_slab_mask())
         if reset_view:
-            self._fit_camera(pts)
+            self._fit_camera(lo, hi)
         self.update()
 
     def set_cloud(
@@ -848,12 +883,9 @@ class EmbeddedViewer(gl.GLViewWidget):
         self._marker_axes.setData(pos=pts, color=cols, width=3, mode="lines")
         self._marker_dot.setData(pos=p[None, :])
 
-    def _fit_marker(self, pts: np.ndarray) -> None:
-        if pts.size == 0:
-            self._marker_size = 1.0
-        else:
-            extent = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
-            self._marker_size = max(extent * 0.05, 0.2)
+    def _fit_marker(self, lo: np.ndarray, hi: np.ndarray) -> None:
+        extent = float(np.linalg.norm(hi - lo))
+        self._marker_size = max(extent * 0.05, 0.2)
         self._refresh_marker_geometry()
 
     def _cancel_marker_drag(self) -> None:
@@ -916,19 +948,13 @@ class EmbeddedViewer(gl.GLViewWidget):
 
     # -- camera / grid helpers --------------------------------------------
 
-    def _fit_camera(self, pts: np.ndarray) -> None:
-        if pts.size == 0:
-            return
-        lo, hi = pts.min(axis=0), pts.max(axis=0)
+    def _fit_camera(self, lo: np.ndarray, hi: np.ndarray) -> None:
         center = (lo + hi) / 2.0
         extent = float(np.linalg.norm(hi - lo))
         self.opts["center"] = QtGui.QVector3D(float(center[0]), float(center[1]), float(center[2]))
         self.setCameraPosition(distance=max(extent * 0.8, 1.0), elevation=30, azimuth=-60)
 
-    def _fit_grid(self, pts: np.ndarray) -> None:
-        if pts.size == 0:
-            return
-        lo, hi = pts.min(axis=0), pts.max(axis=0)
+    def _fit_grid(self, lo: np.ndarray, hi: np.ndarray) -> None:
         cx, cy = float((lo[0] + hi[0]) / 2), float((lo[1] + hi[1]) / 2)
         size_x = max(float(hi[0] - lo[0]), 1.0)
         size_y = max(float(hi[1] - lo[1]), 1.0)

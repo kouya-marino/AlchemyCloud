@@ -109,6 +109,7 @@ under `QT_QPA_PLATFORM=offscreen` so they don't need an X server.
 | `test_regressions.py` | 21 | Audit fixes in the Qt layer, one test per named defect |
 | `test_gui_smoke.py` | 10 | `MainWindow` construction and the async pipeline |
 | `test_background_erase.py` | 21 | Eraser/crop run in the background: instant display hide, ordered queue, undo, failure resync, display ⊆ cloud |
+| `test_gui_thread_perf.py` | 31 | Colours unchanged by the fast conversion, worker colours reused only while still valid, overlapping prepares, no operation or read-only consumer (save, occupancy, stats…) modifies its input, undo/redo/reset by reference |
 
 Two things worth knowing before you add tests here:
 
