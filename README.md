@@ -411,6 +411,7 @@ What's covered (109 tests, ~2 s):
 | `tests/test_rgb_view.py` | The RGB colour mode: source-colour passthrough, tone mapping, the RGB → Z → RGB round trip, toolbar gating. |
 | `tests/test_regressions.py` | Audit fixes in the Qt layer: GL blend mode, marker survival, history/dirty state, close prompt, busy gating, preview dialog staleness. |
 | `tests/test_background_erase.py` | Eraser/crop in the background: points hidden instantly, full-cloud edit queued on a worker in stroke order, undo exactness, failure resync, display always a subset of the cloud. |
+| `tests/test_gui_thread_perf.py` | GUI-thread work removed: colour conversion unchanged, worker-computed colours reused only while valid for the current colour mode, operations never modify their input, undo/redo/reset by reference. |
 
 GUI tests run with `QT_QPA_PLATFORM=offscreen` (set in `conftest.py`) so
 no X server is needed. The pyqtgraph "Requires >= OpenGL 2.1" lines

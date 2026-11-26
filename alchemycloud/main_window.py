@@ -11,7 +11,6 @@ All 3D rendering happens inside this window; no pop-out viewer.
 
 from __future__ import annotations
 
-import copy
 import os
 
 import numpy as np
@@ -625,9 +624,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history.clear()
         self.redo_stack.clear()
 
+    # History, redo and `original_pcd` hold *references*, not copies: no
+    # operation modifies a cloud in place (every pcd_ops transform returns a
+    # new cloud, and the viewer recolours only its own display copy), so a
+    # replaced cloud is already an immutable snapshot. Copying it here cost
+    # ~160 ms of frozen GUI per operation on a 1.8M-point cloud.
+    # tests/test_gui_thread_perf.py guards that invariant.
     def _push_history(self, clear_redo: bool = True):
         if self.current_pcd is not None:
-            self.history.append(copy.deepcopy(self.current_pcd))
+            self.history.append(self.current_pcd)
             if len(self.history) > HISTORY_DEPTH:
                 self.history = self.history[-HISTORY_DEPTH:]
         if clear_redo:
@@ -635,7 +640,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _push_redo(self):
         if self.current_pcd is not None:
-            self.redo_stack.append(copy.deepcopy(self.current_pcd))
+            self.redo_stack.append(self.current_pcd)
             if len(self.redo_stack) > HISTORY_DEPTH:
                 self.redo_stack = self.redo_stack[-HISTORY_DEPTH:]
 
@@ -983,7 +988,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def on_success(result):
             pcd, (display, pts, rgba) = result
-            self.original_pcd = copy.deepcopy(pcd)
+            self.original_pcd = pcd  # shared, never modified (see _push_history)
             self.current_pcd = pcd
             self.current_path = path
             self.cloudChanged.emit(pcd)
@@ -1615,7 +1620,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.original_pcd is None or self._busy:
             return
         self._push_history()
-        clone = copy.deepcopy(self.original_pcd)
+        clone = self.original_pcd  # shared, never modified (see _push_history)
 
         def work():
             return self.viewer.prepare_cloud(clone)

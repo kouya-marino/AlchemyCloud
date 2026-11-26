@@ -9,6 +9,25 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+### Changed
+- **No more GUI freezes after operations or colour-mode switches** ([#4]).
+  Measured offscreen on a 1.84 M-point colour scan (display LOD on):
+  switching the colour mode to X/Y/Z 624 → 45 ms, the redraw after every
+  operation (voxel, filters, undo, redo, reset, load, tilt) 789 → 2 ms, the
+  undo snapshot 172 → 0 ms. The background display preparation also dropped
+  746 → 179 ms.
+  - `colorize_by_axis` passed Open3D a strided view (`rgba[:, :3]`), which it
+    converts element by element (~0.5 s per 500k points); it now passes a
+    contiguous array. Colours are bit-identical.
+  - `apply_prepared_cloud` threw away the colours the worker had just
+    computed and recoloured on the GUI thread. It now reuses them, falling
+    back to a recompute only if the colour mode or RGB tone settings changed
+    while the worker ran. Bounds are computed once, on the worker, and the
+    Z-Slab view uploads the scatter once instead of twice.
+  - Undo/redo history and the reset target hold references to the replaced
+    cloud instead of deep copies. Sound because no operation modifies a cloud
+    in place, which the new tests pin for every operation.
+
 ## [1.4.0] — 2026-11-25
 
 _Theme: Responsive editing & precise framing._
@@ -650,6 +669,7 @@ _Theme: Core engine & basic GUI._
 [Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.4.0...HEAD
 [1.4.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.0
 [1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
+[#4]: https://github.com/kouya-marino/AlchemyCloud/issues/4
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.0.0
