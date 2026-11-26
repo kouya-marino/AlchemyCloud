@@ -32,9 +32,6 @@ coverage.xml
 # Logs
 *.log
 
-# Claude Code / project config
-.claude/
-
 # ---------------------------------------------------------------------------
 # Project data / scratch dirs — large sample clouds & maps, NOT source.
 # These must never be committed (hundreds of MB).
