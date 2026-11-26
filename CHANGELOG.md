@@ -9,6 +9,10 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-11-26
+
+_Theme: No GUI freezes after operations._
+
 ### Changed
 - **No more GUI freezes after operations or colour-mode switches** ([#4]).
   Measured offscreen on a 1.84 M-point colour scan (display LOD on):
@@ -666,7 +670,8 @@ _Theme: Core engine & basic GUI._
 - **`README.md`** — installation, UI walkthrough, parameter reference,
   troubleshooting, programmatic-use snippet.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.1
 [1.4.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.0
 [1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
 [#4]: https://github.com/kouya-marino/AlchemyCloud/issues/4
