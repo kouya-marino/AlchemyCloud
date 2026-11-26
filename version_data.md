@@ -4,7 +4,20 @@ A feature-per-version summary of the LiDAR PCD Editor & Occupancy Grid
 Exporter, from the first release to today. Newest version first. For the
 detailed, change-by-change record see [CHANGELOG.md](CHANGELOG.md).
 
-**Current version: 1.4.0**
+**Current version: 1.4.1**
+
+---
+
+## 1.4.1 — No GUI freezes after operations *(2026-11-26)*
+
+- **Colour-mode switch** to X/Y/Z no longer freezes the window: 624 → 45 ms on
+  a 1.84 M-point colour scan (colours unchanged).
+- **Redraw after every operation** (voxel, filters, undo, redo, reset, load,
+  tilt) reuses the colours computed in the background: 789 → 2 ms on the GUI
+  thread; background display preparation 746 → 179 ms.
+- **Undo/redo/reset** keep the replaced cloud instead of copying it: 172 → 0 ms
+  per operation.
+- **Test suite 160 → 191.**
 
 ---
 

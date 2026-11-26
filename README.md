@@ -371,7 +371,7 @@ AlchemyCloud/
 ├── .github/workflows/       # ci.yml (lint+test) and publish.yml (PyPI on tag)
 ├── LICENSE                  # MIT
 ├── README.md
-├── version_data.md          # feature-per-version summary (0.1.0 → 1.4.0)
+├── version_data.md          # feature-per-version summary (0.1.0 → 1.4.1)
 └── CHANGELOG.md             # detailed version history (Keep a Changelog format)
 ```
 
