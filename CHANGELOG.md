@@ -30,6 +30,16 @@ numbers and groupings mirror the curated overview in
     moves, and the eraser keeps working while its own strokes commit.
   - `ALCHEMYCLOUD_GPU=false` / `off` / `no` keep the GPU off; they used to
     turn it on, because only an empty value or `0` counted as off.
+- **Readable errors, logged failures** ([#11]):
+  - A failed operation shows its one-line reason; the Python traceback moved
+    under "Show Details…". Every background failure is now written to the log
+    file with its traceback (only uncaught exceptions were before).
+  - Undo, Redo and Reset change the history only once their worker succeeds,
+    so a failure can no longer lose or duplicate an undo step.
+  - The map YAML is written as UTF-8 explicitly. On Windows the locale code
+    page was used, which mangles non-ASCII (e.g. Japanese) map names for ROS.
+  - Comments and tooltips that still described voxel display downsampling and
+    deep-copied undo are corrected; Python 3.12 added to the CI matrix.
 
 ### Changed
 - **Faster background operations** ([#7]). Measured on a 1.84 M-point colour
@@ -722,6 +732,7 @@ _Theme: Core engine & basic GUI._
 [#4]: https://github.com/kouya-marino/AlchemyCloud/issues/4
 [#7]: https://github.com/kouya-marino/AlchemyCloud/issues/7
 [#9]: https://github.com/kouya-marino/AlchemyCloud/issues/9
+[#11]: https://github.com/kouya-marino/AlchemyCloud/issues/11
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.0.0
