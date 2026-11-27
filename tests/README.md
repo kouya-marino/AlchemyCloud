@@ -113,6 +113,7 @@ under `QT_QPA_PLATFORM=offscreen` so they don't need an X server.
 | `test_background_ops_perf.py` | 21 | Opt-in GPU radius filter keeps the CPU's points (4 skipped without CUDA), tensor-filter adaptation on the CPU device, CPU fallback on GPU failure, GPU off unless `ALCHEMYCLOUD_GPU=1`, z-clip gather, packed-key voxel3d dedupe, delayed overlay |
 | `test_review_bugs.py` | 27 | Prompt before Open discards edits, dropped-point count from the load (no re-read), truncation still caught, closed previews deleted and no longer rebuilding (Close / Escape / reopen / mid-build), home cell at the map edge, tools locked while busy but not during eraser commits, GPU on/off parsing |
 | `test_errors_and_cleanups.py` | 12 | Error dialogs show the reason with the traceback under details, background failures logged with traceback, undo/redo/reset leave the stacks alone when their worker fails, map YAML opened as UTF-8 |
+| `test_quality_of_life.py` | 20 | Recent files / last folder / window layout persist (isolated per test by the `isolated_settings` fixture), missing recent file dropped, quick save vs Save As (scan never overwritten, ASCII kept, target reset on open), drag-and-drop accept/ignore and open, E/C/M/Esc shortcuts, CLI step order, outputs, errors and no Qt import |
 
 Two things worth knowing before you add tests here:
 
@@ -218,6 +219,7 @@ cloud inline. They're already tuned for the operations they support.
 | `floor_with_chair` | function | Floor at z = 0 + a "chair top" cluster at z = 0.5 — for occupancy / tristate tests. |
 | `tilted_cloud` | function | 12 000-point cloud rotated 10° about +X and lifted 1.5 m — for `level_ground` tests. |
 | `busy_wait` | function | `wait_for(predicate, timeout_s=5)` — drains Qt events while polling. Returns `True` if the predicate became true. |
+| `isolated_settings` | function, **autouse** | Points `QSettings` (INI, user scope) at a fresh temp folder for every test, so tests never touch your real recent files or window layout and cannot leak state into each other. Returns the folder. |
 
 Adding a new fixture? Put it in `conftest.py`, mark it `@pytest.fixture`,
 and any test in any file under `tests/` can use it by name.

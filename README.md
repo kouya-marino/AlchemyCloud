@@ -115,6 +115,43 @@ python main.py                # blank session
 python main.py scans.pcd      # load a PCD on startup
 ```
 
+You can also drag a `.pcd` / `.ply` / `.xyz` file onto the window, or pick one
+from **File → Open Recent**. The app remembers the last folder, the recent
+files (up to 8) and the window and toolbar layout between sessions, in
+`~/.config/AlchemyCloud/AlchemyCloud.ini` (Linux, macOS) or
+`%APPDATA%\AlchemyCloud\AlchemyCloud.ini` (Windows). Delete that file to
+start fresh.
+
+### Headless pipeline (`alchemycloud-cli`)
+
+The same operations run without the GUI (and without importing Qt), for
+batches or for scripting a pipeline you worked out interactively. Steps run in
+the order you give them and may repeat; then the cloud is saved and/or the map
+exported:
+
+```bash
+alchemycloud-cli scan.pcd --zclip -1 3 --voxel 0.05 --sor 30 1.5 --level \
+    -o scan_clean.pcd --map scan_map.pgm --map-threshold 0.3
+```
+
+| Step | Does |
+|---|---|
+| `--zclip ZMIN ZMAX` | keep `ZMIN ≤ z ≤ ZMAX` |
+| `--voxel SIZE` | voxel downsample |
+| `--sor NEIGHBOURS STD_RATIO` | statistical outlier removal |
+| `--radius MIN_POINTS RADIUS` | radius outlier removal (`ALCHEMYCLOUD_GPU=1` uses the GPU) |
+| `--remove-ground [DIST]` | remove the floor plane (default inlier distance 0.05 m) |
+| `--level` | rotate the floor to horizontal and put it at z = 0 |
+| `--tilt ROLL PITCH` | manual trim, degrees |
+| `--origin X Y Z YAW` | re-frame so this pose becomes the origin, like *Apply Marker as Origin* |
+
+Output: `-o OUT` (`--ascii` for ASCII), `--map MAP.pgm` with
+`--map-resolution`, `--map-z ZMIN ZMAX` (default: the whole cloud),
+`--map-threshold H` (tristate; omit for binary), `--map-method`,
+`--map-min-points`, `--map-padding`, `--map-unobserved unknown|free`. Each step
+prints its point count and time; bad parameters exit with status 1 and a
+one-line error. `alchemycloud-cli --help` lists everything.
+
 ---
 
 ## UI walkthrough
@@ -284,6 +321,11 @@ so it's O(N) and works fine on multi-million-point clouds.
 If Z-Slab is also enabled, the eraser only removes points whose Z is
 inside `[z_low, z_high]`.
 
+Like Crop, the eraser works in screen space: it removes *every* point under
+the brush, including points hidden behind the surface you can see (the far
+wall behind a near one, say). Turn on Z-Slab, or orbit to a view where the
+target is not in front of anything you want to keep.
+
 ### Display: LOD vs Full
 
 The Edit toolbar has a modern toggle switch labelled **Display: LOD ⟷ Full**:
@@ -314,13 +356,17 @@ way.
 | Action | Shortcut |
 |---|---|
 | Open PCD | `Ctrl+O` |
-| Save PCD | `Ctrl+S` |
+| Save PCD — to the file last saved this session; the first save asks where, so the opened scan is never overwritten silently (*Save PCD As…* always asks) | `Ctrl+S` |
 | Save as PLY | `Ctrl+Shift+S` |
 | Export map | `Ctrl+M` |
 | Undo | `Ctrl+Z` |
 | Redo | `Ctrl+Y` |
 | Reset camera | `Ctrl+R` |
 | Quit | `Ctrl+Q` |
+| Eraser on/off | `E` |
+| Crop on/off | `C` |
+| Move Marker on/off | `M` |
+| Leave the active tool (cancels a crop drag) | `Esc` |
 
 ---
 
@@ -357,6 +403,7 @@ AlchemyCloud/
 ├── alchemycloud/            # the installable package
 │   ├── __init__.py
 │   ├── app.py               # entry point — wires QApplication and MainWindow (main())
+│   ├── cli.py               # alchemycloud-cli: headless pipeline (no Qt)
 │   ├── main_window.py       # PyQt5 main window, toolbars, dialogs, slots
 │   ├── embedded_viewer.py   # in-window 3D viewer (pyqtgraph GLViewWidget)
 │   ├── loading_overlay.py   # rotating-arc loading spinner
@@ -417,6 +464,7 @@ What's covered (109 tests, ~2 s):
 | `tests/test_background_ops_perf.py` | Faster background operations give identical results: opt-in GPU radius filter vs CPU (skipped without CUDA), its adaptation checked on the CPU device, CPU fallback, z-clip, packed-key voxel3d dedupe, delayed busy overlay with tools locked immediately. |
 | `tests/test_review_bugs.py` | Review fixes: unsaved-edits prompt on Open, no file re-read after load, closed map previews deleted, home cell at the map edge, viewer tools locked while an operation runs, `ALCHEMYCLOUD_GPU` on/off values. |
 | `tests/test_errors_and_cleanups.py` | Readable error dialogs (traceback under details), failures logged, undo/redo/reset safe when their worker fails, UTF-8 map YAML. |
+| `tests/test_quality_of_life.py` | Remembered folder / recent files / layout, quick save, drag-and-drop, tool shortcuts, and the headless `alchemycloud-cli` (step order, outputs, errors, no Qt import). |
 
 GUI tests run with `QT_QPA_PLATFORM=offscreen` (set in `conftest.py`) so
 no X server is needed. The pyqtgraph "Requires >= OpenGL 2.1" lines

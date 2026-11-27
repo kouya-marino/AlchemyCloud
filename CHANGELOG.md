@@ -9,6 +9,23 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+### Added
+- **Quality of life** ([#13]):
+  - The last folder, recent files (**File → Open Recent**, up to 8) and the
+    window and toolbar layout are remembered between sessions.
+  - Drag a `.pcd` / `.ply` / `.xyz` onto the window to open it (with the
+    unsaved-edits prompt).
+  - Shortcuts: `E` eraser, `C` crop, `M` move marker, `Esc` leaves the active
+    tool and cancels a crop drag.
+  - `Ctrl+S` saves straight to the file last saved this session, in the same
+    format. The first save still asks, so the opened scan is never overwritten
+    silently; the new **Save PCD As…** always asks.
+  - `alchemycloud-cli`: the pipeline without the GUI or Qt. Steps (z-clip,
+    voxel, SOR, radius, ground removal, level, tilt, origin) run in the order
+    given, then the cloud is saved and/or the PGM + YAML map exported.
+- The README notes that the eraser, like crop, also removes points hidden
+  behind the visible surface.
+
 ### Fixed
 - **Bugs from a full review** ([#9]):
   - File → Open over unsaved edits now asks Save / Discard / Cancel, like
@@ -733,6 +750,7 @@ _Theme: Core engine & basic GUI._
 [#7]: https://github.com/kouya-marino/AlchemyCloud/issues/7
 [#9]: https://github.com/kouya-marino/AlchemyCloud/issues/9
 [#11]: https://github.com/kouya-marino/AlchemyCloud/issues/11
+[#13]: https://github.com/kouya-marino/AlchemyCloud/issues/13
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.0.0

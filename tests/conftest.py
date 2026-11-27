@@ -40,6 +40,19 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Point MainWindow's QSettings (INI, user scope) at a per-test folder, so
+    tests neither read nor write the developer's real recent files and window
+    layout, and cannot leak state into each other."""
+    from PyQt5 import QtCore
+
+    folder = tmp_path / "qsettings"
+    folder.mkdir()
+    QtCore.QSettings.setPath(QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, str(folder))
+    yield folder
+
+
 @pytest.fixture
 def busy_wait(qapp):
     """Return a `wait_for(pred, timeout_s=5.0) -> bool` helper that drains
