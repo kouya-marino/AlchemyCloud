@@ -111,6 +111,7 @@ under `QT_QPA_PLATFORM=offscreen` so they don't need an X server.
 | `test_background_erase.py` | 21 | Eraser/crop run in the background: instant display hide, ordered queue, undo, failure resync, display ⊆ cloud |
 | `test_gui_thread_perf.py` | 31 | Colours unchanged by the fast conversion, worker colours reused only while still valid, overlapping prepares, no operation or read-only consumer (save, occupancy, stats…) modifies its input, undo/redo/reset by reference |
 | `test_background_ops_perf.py` | 21 | Opt-in GPU radius filter keeps the CPU's points (4 skipped without CUDA), tensor-filter adaptation on the CPU device, CPU fallback on GPU failure, GPU off unless `ALCHEMYCLOUD_GPU=1`, z-clip gather, packed-key voxel3d dedupe, delayed overlay |
+| `test_review_bugs.py` | 27 | Prompt before Open discards edits, dropped-point count from the load (no re-read), truncation still caught, closed previews deleted and no longer rebuilding (Close / Escape / reopen / mid-build), home cell at the map edge, tools locked while busy but not during eraser commits, GPU on/off parsing |
 
 Two things worth knowing before you add tests here:
 

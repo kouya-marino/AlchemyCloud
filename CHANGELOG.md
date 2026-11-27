@@ -9,6 +9,28 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+### Fixed
+- **Bugs from a full review** ([#9]):
+  - File → Open over unsaved edits now asks Save / Discard / Cancel, like
+    closing the window. It used to replace the cloud and clear undo silently.
+  - No GUI freeze after loading. The dropped NaN/inf count was worked out by
+    re-reading the file twice on the GUI thread after every load; it now comes
+    from the load itself. Longest freeze while loading: 1.8 s → 0.1 s on a
+    1.8 M-point scan, 4.8 s → 0.16 s on a 4.9 M-point one.
+  - A closed occupancy preview is now deleted. Closing only hid it, so it kept
+    following the main window and rebuilt the map on every later edit, one
+    hidden build per preview ever opened. A build still running when the
+    preview closes is detached safely.
+  - The preview no longer fails with `IndexError` when world (0, 0) lies in
+    the last half cell of the map: the home check now uses the cell that
+    contains it.
+  - Marker drag, crop and eraser ignore the mouse while an operation runs. The
+    busy overlay that used to block them appears only after 300 ms since #7,
+    and until then the marker could be dragged mid-operation. The camera still
+    moves, and the eraser keeps working while its own strokes commit.
+  - `ALCHEMYCLOUD_GPU=false` / `off` / `no` keep the GPU off; they used to
+    turn it on, because only an empty value or `0` counted as off.
+
 ### Changed
 - **Faster background operations** ([#7]). Measured on a 1.84 M-point colour
   scan, results identical to before:
@@ -699,6 +721,7 @@ _Theme: Core engine & basic GUI._
 [1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
 [#4]: https://github.com/kouya-marino/AlchemyCloud/issues/4
 [#7]: https://github.com/kouya-marino/AlchemyCloud/issues/7
+[#9]: https://github.com/kouya-marino/AlchemyCloud/issues/9
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.0.0

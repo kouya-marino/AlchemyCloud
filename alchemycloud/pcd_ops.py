@@ -34,7 +34,14 @@ def _declared_point_count(path: str) -> int | None:
 
 
 def load_pcd(path: str) -> o3d.geometry.PointCloud:
-    """Read a point cloud, dropping non-finite points.
+    """Read a point cloud, dropping non-finite points. See ``load_pcd_counted``."""
+    return load_pcd_counted(path)[0]
+
+
+def load_pcd_counted(path: str) -> tuple[o3d.geometry.PointCloud, int]:
+    """Read a point cloud, dropping non-finite points. Returns ``(cloud,
+    n_dropped)`` so a caller can report the clean-up without re-reading the
+    file (``non_finite_count`` reads it twice more: seconds on a large scan).
 
     Raw LiDAR routinely contains ``nan nan nan`` rows for invalid returns and
     occasional ``inf`` spikes. Left in, a single one poisons every ``min``/
@@ -53,20 +60,19 @@ def load_pcd(path: str) -> o3d.geometry.PointCloud:
         raise ValueError(f"No points read from {path}")
 
     declared = _declared_point_count(path)
-    if declared is not None:
-        finite = int(np.isfinite(np.asarray(pcd.points)).all(axis=1).sum())
+    dropped = 0
+    if declared is not None and declared > n:
+        # Ambiguous on its own: non-finite rows we deliberately removed look
+        # the same as a truncated body. Re-read raw to tell them apart.
+        raw = len(o3d.io.read_point_cloud(path).points)
+        if raw < declared:
+            raise ValueError(
+                f"{Path(path).name} is truncated: header declares {declared:,} points "
+                f"but the file only contains {raw:,}."
+            )
         dropped = declared - n
-        if dropped > 0 and finite == n:
-            # Ambiguous on its own: non-finite rows we deliberately removed look
-            # the same as a truncated body. Re-read raw to tell them apart.
-            raw = o3d.io.read_point_cloud(path)
-            if len(raw.points) < declared:
-                raise ValueError(
-                    f"{Path(path).name} is truncated: header declares {declared:,} points "
-                    f"but the file only contains {len(raw.points):,}."
-                )
-            log.info("%s: dropped %d non-finite point(s) of %d", path, dropped, declared)
-    return pcd
+        log.info("%s: dropped %d non-finite point(s) of %d", path, dropped, declared)
+    return pcd, dropped
 
 
 def non_finite_count(path: str) -> int:
@@ -126,6 +132,7 @@ def statistical_outlier_removal(
 # *exactly* the radius differently from the CPU, so results would depend on
 # the machine (seen only on clouds with rounded coordinates, never on scans).
 GPU_ENV = "ALCHEMYCLOUD_GPU"
+_GPU_OFF = frozenset({"", "0", "false", "no", "off"})
 _cuda_available: bool | None = None
 
 
@@ -142,8 +149,8 @@ def cuda_available() -> bool:
 
 def cuda_device() -> o3d.core.Device | None:
     """The CUDA device to use, or None to stay on the CPU (the default:
-    ``ALCHEMYCLOUD_GPU`` unset or 0, or no usable GPU)."""
-    if os.environ.get(GPU_ENV, "").strip() in ("", "0") or not cuda_available():
+    ``ALCHEMYCLOUD_GPU`` unset, empty, 0/false/no/off, or no usable GPU)."""
+    if os.environ.get(GPU_ENV, "").strip().lower() in _GPU_OFF or not cuda_available():
         return None
     return o3d.core.Device("CUDA:0")
 
