@@ -649,9 +649,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- async plumbing ----------------------------------------------------
 
+    # Most operations now finish in well under half a second; showing the
+    # spinner only after this long keeps them from flashing it. The tools are
+    # locked (`_busy`) from the start either way.
+    OVERLAY_DELAY_MS = 300
+
     def _begin_busy(self, message: str):
         self._busy = True
-        self.loading.start(message)
+        self.loading.start(message, delay_ms=self.OVERLAY_DELAY_MS)
         self._refresh_state()
 
     def _end_busy(self):

@@ -9,6 +9,29 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+### Changed
+- **Faster background operations** ([#7]). Measured on a 1.84 M-point colour
+  scan, results identical to before:
+  - Radius outlier removal can run its neighbour search on the GPU, opt-in
+    with `ALCHEMYCLOUD_GPU=1`: 1.06 s → ~0.33 s (first call in a session
+    ~0.5 s while CUDA initialises). The tensor filter counts a point as its
+    own neighbour and includes neighbours at exactly the radius, so it is
+    asked for `nb_points + 1` and the next float below the radius; on real
+    scans it then keeps exactly the CPU filter's points. Off by default
+    because on clouds with rounded coordinates (e.g. 1 cm) GPU rounding can
+    still classify up to ~2 % of points differently. Any GPU failure (e.g. out
+    of GPU memory) falls back to the CPU.
+  - Z-clip uses a NumPy gather instead of `select_by_index`: 200 → 27 ms.
+  - Occupancy preview/export with the voxel3d method dedupes voxels through
+    packed int64 keys instead of row-wise `np.unique`: 1.0 s → 0.15 s.
+  - The busy overlay appears only after 300 ms, so quick operations (undo,
+    redo, reset, voxel, z-clip…) no longer flash it. Tools still lock at once.
+- Not changed, after measuring: GPU voxel downsampling put a handful of
+  voxels on a different grid boundary than the CPU (not identical), and the
+  CPU one already takes ~0.27 s; statistical outlier removal was 35 s on the
+  GPU and no faster through SciPy's parallel KD-tree once the tree build is
+  counted, so both stay on Open3D's CPU path.
+
 ## [1.4.1] — 2026-11-26
 
 _Theme: No GUI freezes after operations._
@@ -675,6 +698,7 @@ _Theme: Core engine & basic GUI._
 [1.4.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.0
 [1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
 [#4]: https://github.com/kouya-marino/AlchemyCloud/issues/4
+[#7]: https://github.com/kouya-marino/AlchemyCloud/issues/7
 [1.2.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.2.0
 [1.1.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.1.0
 [1.0.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.0.0

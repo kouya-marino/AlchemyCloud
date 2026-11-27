@@ -15,7 +15,7 @@ Built on **Open3D** (point-cloud kernels), **pyqtgraph** + **PyOpenGL** (embedde
 ### Point-cloud editing
 - **Voxel Downsample** — reduce point density.
 - **Statistical Outlier Removal (SOR)** — denoise. Matches PCL's `pcl_outlier_removal -method statistical`; defaults `neighbours = 30, std-ratio = 1.5`.
-- **Radius Outlier Removal** — drop points whose neighbourhood is too sparse. Matches PCL's `pcl_outlier_removal -method radius`; defaults `nb_points = 30, radius = 0.10 m`.
+- **Radius Outlier Removal** — drop points whose neighbourhood is too sparse. Matches PCL's `pcl_outlier_removal -method radius`; defaults `nb_points = 30, radius = 0.10 m`. Optional GPU acceleration: start the app with `ALCHEMYCLOUD_GPU=1` (needs a CUDA GPU) for a ~3x faster neighbour search. It keeps the same points as the CPU filter on real scans; on clouds with rounded coordinates a neighbour at exactly the radius can be classified differently, which is why it is off by default.
 - **Z-Clip (height filter)** — keep points within a Z range (great before generating a 2D map).
 - **Remove Ground (RANSAC)** — fit and strip the dominant ground plane. Only a *near-horizontal* plane is accepted: RANSAC picks the plane with the most inliers, and in an indoor scan a long wall often beats the floor, so candidates are restricted to the lowest 30 % of the Z range and any fit more than 30° from horizontal is rejected and retried.
 - **Level Ground** — auto-straighten a tilted scan: RANSAC fits the dominant *floor* plane (same near-horizontal constraint as above), the cloud is rotated so its normal aligns with +Z, and translated so the plane lands at `z = 0`. Status bar reports the tilt that was corrected. If no near-horizontal plane exists the operation is refused with an explanation rather than standing the scan on its side.
@@ -305,7 +305,9 @@ on huge clouds, occupancy export) run on a worker thread with a centred
 **rotating-arc spinner** dimming the canvas. Toolbar actions are disabled
 while busy, and the spinner clears automatically once the result is
 applied. Open3D releases the GIL inside its C++ kernels, so the spinner
-keeps animating smoothly.
+keeps animating smoothly. The spinner appears only once a job has run for
+300 ms, so quick operations don't flash it; the tools lock immediately either
+way.
 
 ### Keyboard shortcuts
 
@@ -412,6 +414,7 @@ What's covered (109 tests, ~2 s):
 | `tests/test_regressions.py` | Audit fixes in the Qt layer: GL blend mode, marker survival, history/dirty state, close prompt, busy gating, preview dialog staleness. |
 | `tests/test_background_erase.py` | Eraser/crop in the background: points hidden instantly, full-cloud edit queued on a worker in stroke order, undo exactness, failure resync, display always a subset of the cloud. |
 | `tests/test_gui_thread_perf.py` | GUI-thread work removed: colour conversion unchanged, worker-computed colours reused only while valid for the current colour mode, operations never modify their input, undo/redo/reset by reference. |
+| `tests/test_background_ops_perf.py` | Faster background operations give identical results: opt-in GPU radius filter vs CPU (skipped without CUDA), its adaptation checked on the CPU device, CPU fallback, z-clip, packed-key voxel3d dedupe, delayed busy overlay with tools locked immediately. |
 
 GUI tests run with `QT_QPA_PLATFORM=offscreen` (set in `conftest.py`) so
 no X server is needed. The pyqtgraph "Requires >= OpenGL 2.1" lines
@@ -429,6 +432,7 @@ reuse, and how to add new tests.
 - **Slow load on huge clouds.** Voxel-downsample first (e.g., `0.05` m) before applying SOR or RANSAC — those are O(N). For display, the viewer auto-LODs anything over 500 k points by uniform random subsampling (filters, crop and export always use the full cloud).
 - **"No near-horizontal plane found"** from Level Ground or Remove Ground. The dominant plane in the scan is a wall or ceiling, not a floor. Crop to the floor area first, or pass a larger `max_tilt_deg` if the scan really is that steep.
 - **"Grid would be N x M cells, above the 25 M limit"** on export. Either the resolution is too fine for the cloud's extent, or — if the message also mentions sensor glitches — a handful of stray returns have inflated the bounding box. Run Statistical Outlier Removal or tighten the Z range.
+- **GPU errors or a crash in radius outlier removal.** The GPU path only runs when you start the app with `ALCHEMYCLOUD_GPU=1`; unset it to stay on the CPU. Running out of GPU memory (a large radius on a dense cloud, or another program holding the GPU) already falls back to the CPU on its own, with a warning in the log.
 - **Where are the logs?** `$XDG_STATE_HOME/alchemycloud/alchemycloud.log` on Linux (`~/.local/state/alchemycloud/` by default), `%LOCALAPPDATA%\alchemycloud\` on Windows, `~/Library/Logs/alchemycloud/` on macOS. Run with `-v` for debug output on stderr.
 - **The crop selection feels off.** The rectangle is screen-space, so the crop depends on the current camera angle. Orbit to a clean top-down or side view before drawing the box if you want predictable axis-aligned cuts.
 
