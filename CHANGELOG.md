@@ -9,6 +9,10 @@ numbers and groupings mirror the curated overview in
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-11-27
+
+_Theme: Headless pipeline, safer sessions, faster background work._
+
 ### Added
 - **Quality of life** ([#13]):
   - The last folder, recent files (**File → Open Recent**, up to 8) and the
@@ -742,7 +746,8 @@ _Theme: Core engine & basic GUI._
 - **`README.md`** — installation, UI walkthrough, parameter reference,
   troubleshooting, programmatic-use snippet.
 
-[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/kouya-marino/AlchemyCloud/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.5.0
 [1.4.1]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.1
 [1.4.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.4.0
 [1.3.0]: https://github.com/kouya-marino/AlchemyCloud/releases/tag/v1.3.0
