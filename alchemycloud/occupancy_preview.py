@@ -21,6 +21,21 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from . import occupancy, pcd_ops
 from .worker import run_async
 
+# Builds still running when their dialog closed. Held here (not on the dialog,
+# which is about to be deleted) until the pool thread is done with them:
+# dropping the last reference to a running QRunnable frees it under the pool.
+_DETACHED_WORKERS: set = set()
+
+
+def _detach_worker(worker) -> None:
+    for sig in (worker.signals.success, worker.signals.error, worker.signals.finished):
+        try:
+            sig.disconnect()
+        except (TypeError, RuntimeError):
+            pass  # nothing connected, or wrapper already gone
+    _DETACHED_WORKERS.add(worker)
+    worker.signals.finished.connect(lambda w=worker: _DETACHED_WORKERS.discard(w))
+
 
 class OccupancyPreviewDialog(QtWidgets.QDialog):
     DEBOUNCE_MS = 120
@@ -34,7 +49,12 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Occupancy Grid Preview")
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowMinMaxButtonsHint)
+        # Closing must destroy the dialog. It used to only hide it, so it stayed
+        # a child of the main window, still connected to `cloudChanged`, and
+        # every closed preview rebuilt the map on every later edit.
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         self.resize(900, 560)
+        self._closed = False
 
         self._pcd = pcd
         self._default_save_path = default_save_path
@@ -167,7 +187,7 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         self.save_btn.setShortcut(QtGui.QKeySequence.Save)
         self.save_btn.clicked.connect(self._on_save)
         self.close_btn = QtWidgets.QPushButton("Close")
-        self.close_btn.clicked.connect(self.accept)
+        self.close_btn.clicked.connect(self.close)
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.close_btn)
         form.addRow(btn_row)
@@ -211,7 +231,7 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         applying a Z-clip and then hitting Save exported the pre-clip map.
         MainWindow connects its `cloudChanged` signal here.
         """
-        if pcd is None or len(pcd.points) == 0:
+        if self._closed or pcd is None or len(pcd.points) == 0:
             return
         self._pcd = pcd
         self._last_grid = None
@@ -221,11 +241,26 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         self._schedule()
 
     def closeEvent(self, event):
-        """Stop the debounce timer and drop any pending save before teardown."""
+        """Stop the debounce timer, drop any pending save, and detach a build
+        still in flight, whose callbacks would otherwise touch a deleted
+        dialog."""
+        self._closed = True
         self._debounce.stop()
         self._save_pending = False
         self._dirty = False
+        if self._worker_ref is not None:
+            _detach_worker(self._worker_ref)
+            self._worker_ref = None
         super().closeEvent(event)
+
+    def reject(self):
+        # Escape: close (and so delete) rather than QDialog's plain hide.
+        # QDialog.closeEvent itself calls reject() and refuses the close if the
+        # dialog is still visible afterwards, so hide first, then close only
+        # when this reject did not come from a close already in progress.
+        super().reject()
+        if not self._closed:
+            self.close()
 
     def _on_tristate_toggled(self, on: bool):
         self.threshold_spin.setEnabled(on)
@@ -260,6 +295,8 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
     # -- preview rebuild ---------------------------------------------------
 
     def _render_preview(self):
+        if self._closed:
+            return
         if self._busy:
             self._dirty = True
             return
@@ -323,6 +360,22 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         row = (grid.height - 1) - ((0.0 - oy) / res - 0.5)
         return col, row
 
+    @staticmethod
+    def home_cell(grid: occupancy.OccupancyGrid) -> tuple[int, int] | None:
+        """Image (col, row) of the cell that *contains* world (0, 0), or None
+        when it lies outside the map.
+
+        Rounding `home_pixel` instead could step one past the last cell: a home
+        in the right half of the last column (col 9.7 on a 10-wide map) gave
+        index 10 and an IndexError.
+        """
+        ox, oy, _ = grid.origin
+        col = int(np.floor((0.0 - ox) / grid.resolution))
+        row = grid.height - 1 - int(np.floor((0.0 - oy) / grid.resolution))
+        if 0 <= col < grid.width and 0 <= row < grid.height:
+            return col, row
+        return None
+
     def _update_preview_pixmap(self, grid: occupancy.OccupancyGrid):
         img_u8 = np.ascontiguousarray(grid.image, dtype=np.uint8)
         h, w = img_u8.shape
@@ -360,13 +413,14 @@ class OccupancyPreviewDialog(QtWidgets.QDialog):
         occ = float((img == occupancy.OCC).mean() * 100)
         free = float((img == occupancy.FREE).mean() * 100)
         unk = float((img == occupancy.UNKNOWN).mean() * 100)
-        col, row = self.home_pixel(grid)
-        if 0 <= col < grid.width and 0 <= row < grid.height:
-            value = int(img[int(round(row)), int(round(col))])
+        cell = self.home_cell(grid)
+        if cell is not None:
+            col, row = cell
+            value = int(img[row, col])
             where = {occupancy.OCC: "OCCUPIED", occupancy.FREE: "free", occupancy.UNKNOWN: "UNKNOWN"}.get(
                 value, str(value)
             )
-            note = f"home (0,0) at px {int(col)},{int(row)} — on {where}"
+            note = f"home (0,0) at px {col},{row} — on {where}"
             # A home in unknown or occupied space is a real problem: the robot
             # would localise into grey, or inside an obstacle.
             colour = "#888" if value == occupancy.FREE else "#d66"

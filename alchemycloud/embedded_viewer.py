@@ -254,6 +254,10 @@ class EmbeddedViewer(gl.GLViewWidget):
         self._eraser_brush_aspect = 2.0  # only used by "rectangle"
         self._eraser_path: list[QtCore.QPoint] | None = None
 
+        # Set while the main window runs an operation: the tools ignore the
+        # mouse (see set_tools_locked), the camera does not.
+        self._tools_locked = False
+
         # Marker drag state
         self._marker_mode = False
         self._marker_drag_origin: QtCore.QPoint | None = None
@@ -978,7 +982,37 @@ class EmbeddedViewer(gl.GLViewWidget):
         self._legend.setGeometry(self.width() - legend_w - margin, margin, legend_w, legend_h)
         self._legend.raise_()
 
+    def set_tools_locked(self, locked: bool) -> None:
+        """Make marker drag, crop and eraser ignore the mouse while an
+        operation runs. The busy overlay used to block the canvas, but it now
+        appears only after a delay, and until then the marker could be dragged
+        mid-operation. Orbit / pan / zoom keep working. Locking also abandons
+        a drag already in progress."""
+        self._tools_locked = bool(locked)
+        if self._tools_locked:
+            self._cancel_marker_drag()
+            self._crop_origin = None
+            self._crop_current = None
+            self._overlay.set_rect(None)
+            if self._eraser_path is not None:
+                self._eraser_path = None
+                self._overlay.set_stroke([])
+
+    def tools_locked(self) -> bool:
+        return self._tools_locked
+
+    def _tool_owns(self, button) -> bool:
+        """Whether the active tool, rather than the camera, handles `button`."""
+        if self._eraser_mode or self._crop_mode:
+            return button == QtCore.Qt.LeftButton
+        if self._marker_mode:
+            return button in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton)
+        return False
+
     def mousePressEvent(self, ev):
+        if self._tools_locked and self._tool_owns(ev.button()):
+            ev.accept()
+            return
         if self._eraser_mode:
             if ev.button() == QtCore.Qt.LeftButton:
                 self._eraser_path = [ev.pos()]

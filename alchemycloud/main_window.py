@@ -656,11 +656,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _begin_busy(self, message: str):
         self._busy = True
+        # The overlay that swallows canvas clicks is not up yet for the first
+        # OVERLAY_DELAY_MS, so lock the viewer's tools (marker drag, crop,
+        # eraser) directly. The camera stays movable.
+        self.viewer.set_tools_locked(True)
         self.loading.start(message, delay_ms=self.OVERLAY_DELAY_MS)
         self._refresh_state()
 
     def _end_busy(self):
         self._busy = False
+        self.viewer.set_tools_locked(False)
         self.loading.stop()
         self._busy_worker_ref = None
         self._refresh_state()
@@ -910,29 +915,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Unsaved edits: ask before throwing them away. There was previously no
         # dirty tracking at all, so an hour of filtering and cropping vanished
         # on close with no prompt.
-        if self._dirty and self.prompt_unsaved_on_close and self.current_pcd is not None:
-            choice = QtWidgets.QMessageBox.warning(
-                self,
-                "Unsaved changes",
-                "This cloud has unsaved edits. Save before closing?",
-                QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
-                QtWidgets.QMessageBox.Save,
-            )
-            if choice == QtWidgets.QMessageBox.Cancel:
-                event.ignore()
-                return
-            if choice == QtWidgets.QMessageBox.Save:
-                self.action_save()
-                # action_save runs on a worker, so the write is still in flight.
-                # Refuse the close and let the user try again once it lands
-                # rather than racing teardown against the file write.
-                if self._busy:
-                    self.statusBar().showMessage("Saving… close again once the save completes.", 6000)
-                    event.ignore()
-                    return
-                if self._dirty:  # dialog cancelled or save failed
-                    event.ignore()
-                    return
+        # A Save choice runs on a worker, so the close is refused and retried
+        # once it lands rather than racing teardown against the file write.
+        if not self._ok_to_discard_edits("close again"):
+            event.ignore()
+            return
 
         # Close any child preview dialogs first so their timers and workers stop
         # before this window is torn down.
@@ -972,8 +959,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- file actions ------------------------------------------------------
 
+    def _ok_to_discard_edits(self, retry_hint: str) -> bool:
+        """Ask before unsaved edits are thrown away. True means go ahead.
+
+        Save starts an async write, so the caller cannot proceed in the same
+        call; the user is told to retry (`retry_hint`) once it lands.
+        """
+        if not (self._dirty and self.prompt_unsaved_on_close and self.current_pcd is not None):
+            return True
+        choice = QtWidgets.QMessageBox.warning(
+            self,
+            "Unsaved changes",
+            "This cloud has unsaved edits. Save them first?",
+            QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Save,
+        )
+        if choice == QtWidgets.QMessageBox.Cancel:
+            return False
+        if choice == QtWidgets.QMessageBox.Save:
+            self.action_save()
+            if self._busy:  # the write is still in flight
+                self.statusBar().showMessage(f"Saving… {retry_hint} once the save completes.", 6000)
+                return False
+            return not self._dirty  # dialog cancelled or save failed
+        return True
+
     def action_open(self):
         if self._busy:
+            return
+        # Opening a file replaces the cloud and clears undo, so it loses
+        # unsaved edits exactly like closing the window does.
+        if not self._ok_to_discard_edits("open the file again"):
             return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open PCD", "", "Point clouds (*.pcd *.ply *.xyz);;All files (*)"
@@ -987,12 +1003,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         def work():
-            pcd = pcd_ops.load_pcd(path)
+            # The dropped count comes from the load itself: re-reading the file
+            # to count it froze the GUI for seconds after every load.
+            pcd, dropped = pcd_ops.load_pcd_counted(path)
             prepared = self.viewer.prepare_cloud(pcd)
-            return pcd, prepared
+            return pcd, dropped, prepared
 
         def on_success(result):
-            pcd, (display, pts, rgba) = result
+            pcd, dropped, (display, pts, rgba) = result
             self.original_pcd = pcd  # shared, never modified (see _push_history)
             self.current_pcd = pcd
             self.current_path = path
@@ -1003,7 +1021,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # A new file is a new frame of reference, so the marker resets here
             # (and only here, plus after Apply Marker).
             self.viewer.apply_prepared_cloud(display, pts, rgba, reset_view=True, reset_marker=True)
-            dropped = pcd_ops.non_finite_count(path)
             if dropped:
                 self.statusBar().showMessage(
                     f"Loaded {len(pcd.points):,} points — dropped {dropped:,} non-finite (NaN/inf) point(s).",
