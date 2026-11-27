@@ -23,6 +23,9 @@ class LoadingOverlay(QtWidgets.QWidget):
         self._message = "Loading…"
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
+        self._show_timer = QtCore.QTimer(self)
+        self._show_timer.setSingleShot(True)
+        self._show_timer.timeout.connect(self._show_now)
 
         parent.installEventFilter(self)
         self.resize(parent.size())
@@ -30,9 +33,17 @@ class LoadingOverlay(QtWidgets.QWidget):
 
     # -- public API --------------------------------------------------------
 
-    def start(self, message: str | None = None) -> None:
+    def start(self, message: str | None = None, delay_ms: int = 0) -> None:
+        """Show the overlay, after `delay_ms` if given. A job that finishes
+        within the delay (stop() first) never flashes the overlay at all."""
         if message:
             self._message = message
+        if delay_ms > 0 and not self.isVisible():
+            self._show_timer.start(int(delay_ms))
+            return
+        self._show_now()
+
+    def _show_now(self) -> None:
         if not self.isVisible():
             self.resize(self.parentWidget().size())
             self.show()
@@ -40,6 +51,7 @@ class LoadingOverlay(QtWidgets.QWidget):
         self._timer.start(40)
 
     def stop(self) -> None:
+        self._show_timer.stop()
         self._timer.stop()
         self.hide()
 

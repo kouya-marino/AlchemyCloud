@@ -266,6 +266,28 @@ def from_projection(pcd: o3d.geometry.PointCloud, params: GridParams) -> Occupan
     return OccupancyGrid(image=image, resolution=params.resolution, origin=(frame.x_min, frame.y_min, 0.0))
 
 
+def _unique_voxels(v: np.ndarray) -> np.ndarray:
+    """``np.unique(v, axis=0)`` for (N, 3) int64 voxel indices, same rows in the
+    same (lexicographic) order, ~10x faster.
+
+    Row-wise unique sorts structured void records (~1 s for 1.8 M points). Packing
+    each row into one int64 key in row-major order keeps the ordering and lets
+    NumPy sort plain integers instead.
+    """
+    lo = v.min(axis=0)
+    span = v.max(axis=0) - lo + 1
+    if int(span[0]) * int(span[1]) * int(span[2]) >= 2**62:  # key would overflow
+        return np.unique(v, axis=0)
+    rel = v - lo
+    keys = np.unique((rel[:, 0] * span[1] + rel[:, 1]) * span[2] + rel[:, 2])
+    out = np.empty((len(keys), 3), dtype=np.int64)
+    out[:, 2] = keys % span[2]
+    rest = keys // span[2]
+    out[:, 1] = rest % span[1]
+    out[:, 0] = rest // span[1]
+    return out + lo
+
+
 def from_voxel3d(pcd: o3d.geometry.PointCloud, params: GridParams) -> OccupancyGrid:
     """Voxelize at `resolution`, then collapse occupied voxels to 2D.
 
@@ -280,10 +302,7 @@ def from_voxel3d(pcd: o3d.geometry.PointCloud, params: GridParams) -> OccupancyG
     if len(pts) == 0:
         raise ValueError("No points in the requested Z range — cannot build a grid.")
 
-    vx = np.floor(pts[:, 0] / res).astype(np.int64)
-    vy = np.floor(pts[:, 1] / res).astype(np.int64)
-    vz = np.floor(pts[:, 2] / res).astype(np.int64)
-    voxels = np.unique(np.stack([vx, vy, vz], axis=1), axis=0)
+    voxels = _unique_voxels(np.floor(pts / res).astype(np.int64))
 
     frame = _frame_from_voxel_index(voxels[:, 0], voxels[:, 1], params)
     if params.height_threshold is not None:
