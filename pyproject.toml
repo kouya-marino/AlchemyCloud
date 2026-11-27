@@ -54,6 +54,10 @@ Issues = "https://github.com/kouya-marino/AlchemyCloud/issues"
 [project.gui-scripts]
 alchemycloud = "alchemycloud.app:main"
 
+[project.scripts]
+# Headless pipeline (no Qt): load, filter, level, save, export map.
+alchemycloud-cli = "alchemycloud.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["alchemycloud*"]
 

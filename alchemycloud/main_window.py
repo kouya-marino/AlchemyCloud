@@ -162,10 +162,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._slab_debounce.setInterval(80)
         self._slab_debounce.timeout.connect(self._apply_zslab_bounds)
 
+        # Remembered between sessions: last folder, recent files, window
+        # layout. INI format in the user scope on every platform, so tests can
+        # redirect it with QSettings.setPath.
+        self._settings = QtCore.QSettings(
+            QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, "AlchemyCloud", "AlchemyCloud"
+        )
+        # (path, ascii) of the last successful save this session: Ctrl+S writes
+        # there without asking. None until the first save, so Ctrl+S never
+        # silently overwrites the scan that was opened.
+        self._save_target: tuple[str, bool] | None = None
+        self.setAcceptDrops(True)
+
         self._build_menus()
         self._build_toolbars()
         self._build_statusbar()
         self._refresh_state()
+        self._restore_layout()
 
     # -- UI scaffolding ----------------------------------------------------
 
@@ -180,8 +193,13 @@ class MainWindow(QtWidgets.QMainWindow):
         mbar = self.menuBar()
         m_file = mbar.addMenu("&File")
         a_open = m_file.addAction("&Open PCD…", self.action_open, "Ctrl+O")
-        a_save = m_file.addAction("&Save PCD…", self.action_save, "Ctrl+S")
-        a_save_ascii = m_file.addAction("Save PCD As (ASCII)…", lambda: self.action_save(ascii_format=True))
+        self._recent_menu = m_file.addMenu("Open &Recent")
+        self._rebuild_recent_menu()
+        m_file.addSeparator()
+        a_save = m_file.addAction("&Save PCD", self.action_save, "Ctrl+S")
+        a_save.setToolTip("Save to the file you last saved this session; the first save asks where.")
+        a_save_as = m_file.addAction("Save PCD &As…", self.action_save_as)
+        a_save_ascii = m_file.addAction("Save PCD As (ASCII)…", lambda: self.action_save_as(ascii_format=True))
         a_ply = m_file.addAction("Save as &PLY…", self.action_save_as_ply, "Ctrl+Shift+S")
         m_file.addSeparator()
         a_map = m_file.addAction("Export &Map (PGM + YAML)…", self.action_export_map, "Ctrl+M")
@@ -197,11 +215,31 @@ class MainWindow(QtWidgets.QMainWindow):
         a_cam = m_view.addAction("Reset camera", self.action_reset_camera, "Ctrl+R")
 
         # Disabled whenever a worker is running.
-        self._menu_actions = [a_open, a_save, a_save_ascii, a_ply, a_map, a_undo, a_redo, a_reset, a_cam]
+        a_recent = self._recent_menu.menuAction()
+        self._menu_actions = [
+            a_open,
+            a_recent,
+            a_save,
+            a_save_as,
+            a_save_ascii,
+            a_ply,
+            a_map,
+            a_undo,
+            a_redo,
+            a_reset,
+            a_cam,
+        ]
         # Undo/Redo stay live while eraser strokes are queued (they defer).
         self._menu_undo, self._menu_redo = a_undo, a_redo
         # Disabled additionally when no cloud is loaded.
-        self._menu_needs_cloud = [a_save, a_save_ascii, a_ply, a_map, a_cam]
+        self._menu_needs_cloud = [a_save, a_save_as, a_save_ascii, a_ply, a_map, a_cam]
+
+        # Esc leaves the active tool (crop, eraser, marker), cancelling a crop
+        # rectangle mid-drag. A window action, so it works without a menu entry.
+        self._a_leave_tool = QtWidgets.QAction("Leave tool", self)
+        self._a_leave_tool.setShortcut(QtCore.Qt.Key_Escape)
+        self._a_leave_tool.triggered.connect(self.action_leave_tool)
+        self.addAction(self._a_leave_tool)
 
     def _build_toolbars(self):
         edit_tb = self.addToolBar("Edit")
@@ -232,6 +270,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Crop is now a toggle with a Keep/Remove mode combo.
         self._a_crop = edit_tb.addAction("Crop (drag a box)", self._on_crop_toggled)
         self._a_crop.setCheckable(True)
+        self._a_crop.setShortcut("C")
+        self._a_crop.setToolTip("Crop: drag a rectangle on the canvas (C). Esc leaves the tool.")
         self.crop_mode_combo = QtWidgets.QComboBox()
         self.crop_mode_combo.addItems(["Keep inside", "Remove inside"])
         edit_tb.addWidget(self.crop_mode_combo)
@@ -313,6 +353,8 @@ class MainWindow(QtWidgets.QMainWindow):
         marker_tb.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         self._a_marker = marker_tb.addAction("Move Marker (LMB → XY, RMB → yaw)", self._on_marker_toggled)
         self._a_marker.setCheckable(True)
+        self._a_marker.setShortcut("M")
+        self._a_marker.setToolTip("Move the marker: left-drag on XY, right-drag for yaw (M). Esc leaves the tool.")
         self._a_reset_marker = marker_tb.addAction("Reset Marker", self.action_reset_marker)
         self._a_apply_marker = marker_tb.addAction("Apply Marker as Origin", self.action_apply_marker)
         self._a_apply_marker.setToolTip(
@@ -411,9 +453,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # Eraser
         self._a_eraser = tools_tb.addAction("Eraser", self._on_eraser_toggled)
         self._a_eraser.setCheckable(True)
+        self._a_eraser.setShortcut("E")
         self._a_eraser.setToolTip(
             "Drag with the left mouse button to paint over points and erase "
-            "them. Brush size adjustable. Honours Z-Slab if active."
+            "them (E). Brush size adjustable. Honours Z-Slab if active. Esc leaves the tool."
         )
         tools_tb.addWidget(QtWidgets.QLabel(" brush px:"))
         self.eraser_size_spin = QtWidgets.QSpinBox()
@@ -908,9 +951,122 @@ class MainWindow(QtWidgets.QMainWindow):
         if dlg in self._occupancy_dialogs:
             self._occupancy_dialogs.remove(dlg)
 
-    def _on_saved(self, saved_path: str, prefix: str) -> None:
+    def _on_saved(self, saved_path: str, prefix: str, ascii_format: bool = False) -> None:
         self._dirty = False
+        self._save_target = (saved_path, ascii_format)
+        self._remember_dir(saved_path)
         self.statusBar().showMessage(f"{prefix} {saved_path}", 5000)
+
+    # -- remembered settings -----------------------------------------------
+
+    RECENT_MAX = 8
+
+    def _restore_layout(self) -> None:
+        geometry = self._settings.value("window/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        state = self._settings.value("window/state")
+        if state is not None:
+            self.restoreState(state)
+
+    def last_dir(self) -> str:
+        """Folder of the last file opened or saved, or "" (the dialog's
+        default) if there is none or it no longer exists."""
+        d = self._settings.value("paths/last_dir", "", type=str)
+        return d if d and os.path.isdir(d) else ""
+
+    def _remember_dir(self, path: str) -> None:
+        self._settings.setValue("paths/last_dir", os.path.dirname(os.path.abspath(path)))
+
+    def recent_files(self) -> list[str]:
+        value = self._settings.value("paths/recent", [], type=list)
+        return [str(p) for p in value if p]
+
+    def _set_recent_files(self, paths: list[str]) -> None:
+        self._settings.setValue("paths/recent", paths[: self.RECENT_MAX])
+        self._rebuild_recent_menu()
+
+    def _remember_file(self, path: str) -> None:
+        path = os.path.abspath(path)
+        self._set_recent_files([path] + [p for p in self.recent_files() if p != path])
+        self._remember_dir(path)
+
+    def _rebuild_recent_menu(self) -> None:
+        menu = self._recent_menu
+        menu.clear()
+        recent = self.recent_files()
+        for i, path in enumerate(recent, start=1):
+            label = f"&{i}  {os.path.basename(path)}" if i < 10 else os.path.basename(path)
+            a = menu.addAction(label, lambda p=path: self.open_recent(p))
+            a.setToolTip(path)
+            a.setStatusTip(path)
+        if recent:
+            menu.addSeparator()
+            menu.addAction("Clear Recent", lambda: self._set_recent_files([]))
+        else:
+            menu.addAction("(none)").setEnabled(False)
+
+    def open_recent(self, path: str) -> None:
+        if self._busy:
+            return
+        if not os.path.isfile(path):
+            self._set_recent_files([p for p in self.recent_files() if p != path])
+            self.statusBar().showMessage(f"No longer exists, removed from Recent: {path}", 6000)
+            return
+        if self._ok_to_discard_edits("open it again"):
+            self.load_path(path)
+
+    # -- drag and drop -----------------------------------------------------
+
+    CLOUD_SUFFIXES = (".pcd", ".ply", ".xyz", ".xyzn", ".xyzrgb", ".pts")
+
+    def _dropped_cloud(self, mime) -> str | None:
+        """The first local point-cloud file in a drag, or None."""
+        if not mime.hasUrls():
+            return None
+        for url in mime.urls():
+            path = url.toLocalFile()
+            if path and path.lower().endswith(self.CLOUD_SUFFIXES):
+                return path
+        return None
+
+    def dragEnterEvent(self, event):
+        if not self._busy and self._dropped_cloud(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        path = self._dropped_cloud(event.mimeData())
+        if path is None or self._busy:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        # Queued so the drag-and-drop operation finishes (and the source
+        # application is released) before a modal unsaved-edits prompt.
+        QtCore.QTimer.singleShot(0, lambda: self._open_dropped(path))
+
+    def _open_dropped(self, path: str) -> None:
+        if self._busy:
+            return
+        if self._ok_to_discard_edits("drop the file again"):
+            self.load_path(path)
+
+    # -- tool shortcuts ----------------------------------------------------
+
+    def action_leave_tool(self) -> None:
+        """Esc: switch off whichever of crop / eraser / marker is active."""
+        for action, handler in (
+            (self._a_crop, self._on_crop_toggled),
+            (self._a_eraser, self._on_eraser_toggled),
+            (self._a_marker, self._on_marker_toggled),
+        ):
+            if action.isChecked():
+                action.setChecked(False)
+                handler()
 
     def closeEvent(self, event):
         # Eraser/crop edits still committing: refuse this close (they finish in
@@ -965,6 +1121,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     pass
             self._closing_mask_worker_ref = mw
             self._mask_worker_ref = None
+        self._settings.setValue("window/geometry", self.saveGeometry())
+        self._settings.setValue("window/state", self.saveState())
         super().closeEvent(event)
 
     # -- file actions ------------------------------------------------------
@@ -1002,7 +1160,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._ok_to_discard_edits("open the file again"):
             return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Open PCD", "", "Point clouds (*.pcd *.ply *.xyz);;All files (*)"
+            self, "Open PCD", self.last_dir(), "Point clouds (*.pcd *.ply *.xyz);;All files (*)"
         )
         if not path:
             return
@@ -1024,6 +1182,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.original_pcd = pcd  # shared, never modified (see _push_history)
             self.current_pcd = pcd
             self.current_path = path
+            self._save_target = None  # a new file: the first Ctrl+S asks again
+            self._remember_file(path)
             self.cloudChanged.emit(pcd)
             self._reset_undo_stacks()
             self._dirty = False
@@ -1044,28 +1204,46 @@ class MainWindow(QtWidgets.QMainWindow):
             error_title="Open failed",
         )
 
-    def action_save(self, ascii_format: bool = False):
+    def action_save(self):
+        """Ctrl+S: write straight to the file last saved this session, in the
+        same format. With no save yet it asks (Save As), so the scan that was
+        opened is never overwritten without the user choosing it."""
         if self.current_pcd is None or self._busy:
             return
-        default = os.path.splitext(self.current_path or "cloud.pcd")[0] + "_edited.pcd"
+        if self._save_target is None:
+            self.action_save_as()
+            return
+        path, ascii_format = self._save_target
+        self._save_to(path, ascii_format)
+
+    def action_save_as(self, ascii_format: bool = False):
+        if self.current_pcd is None or self._busy:
+            return
+        if self._save_target is not None:
+            default = self._save_target[0]
+        else:
+            default = os.path.splitext(self.current_path or "cloud.pcd")[0] + "_edited.pcd"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save PCD", default, "PCD files (*.pcd);;PLY files (*.ply);;All files (*)"
         )
         if not path:
             return
+        self._save_to(path, ascii_format)
+
+    def _save_to(self, path: str, ascii_format: bool, prefix: str = "Saved to", error_title: str = "Save failed"):
         pcd = self.current_pcd
         self._run_async(
             lambda: (pcd_ops.save_pcd(pcd, path, ascii_format=ascii_format), path)[1],
-            on_success=lambda saved: self._on_saved(saved, "Saved to"),
+            on_success=lambda saved: self._on_saved(saved, prefix, ascii_format),
             message=f"Saving {os.path.basename(path)}…",
-            error_title="Save failed",
+            error_title=error_title,
         )
 
     def action_save_as_ply(self):
         """Save the current cloud as a .ply file (PCD → PLY conversion).
 
         Open3D infers the file format from the extension, so this is just
-        ``action_save`` with the dialog defaulted to `.ply`. Useful when
+        ``action_save_as`` with the dialog defaulted to `.ply`. Useful when
         downstream tools (FAST-LIO localisation, MeshLab, CloudCompare)
         expect PLY rather than PCD."""
         if self.current_pcd is None or self._busy:
@@ -1078,13 +1256,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not path.lower().endswith(".ply"):
             path += ".ply"
-        pcd = self.current_pcd
-        self._run_async(
-            lambda: (pcd_ops.save_pcd(pcd, path, ascii_format=False), path)[1],
-            on_success=lambda saved: self._on_saved(saved, "Saved PLY →"),
-            message=f"Saving {os.path.basename(path)}…",
-            error_title="Save as PLY failed",
-        )
+        self._save_to(path, False, prefix="Saved PLY →", error_title="Save as PLY failed")
 
     # -- view / color actions ---------------------------------------------
 
