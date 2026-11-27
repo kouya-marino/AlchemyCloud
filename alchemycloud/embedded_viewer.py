@@ -128,7 +128,7 @@ class EmbeddedViewer(gl.GLViewWidget):
     # Eraser drag finished: emits (path_xy_list, brush_radius_px)
     eraserStrokeFinished = QtCore.pyqtSignal(object, int)
 
-    DISPLAY_MAX = 500_000  # points beyond this get voxel-downsampled for display
+    DISPLAY_MAX = 500_000  # display shows a uniform random subset of at most this many points
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -404,8 +404,9 @@ class EmbeddedViewer(gl.GLViewWidget):
             display = copy.deepcopy(display)
 
         # Snapshot the cloud's own RGB *before* colorize_by_axis overwrites it.
-        # voxel_down_sample averages colours per voxel, so this stays meaningful
-        # under display-LOD. Promoted to `_source_rgb` in apply_prepared_cloud.
+        # display_downsample keeps real source points (colours included), so
+        # this stays exact under display-LOD. Promoted to `_source_rgb` in
+        # apply_prepared_cloud.
         src = np.asarray(display.colors, dtype=np.float32)
         src = src.copy() if src.size else None
 

@@ -22,7 +22,7 @@ from .embedded_viewer import EmbeddedViewer, mask_points_in_brush, mask_points_i
 from .loading_overlay import LoadingOverlay
 from .occupancy_preview import OccupancyPreviewDialog
 from .widgets import ToggleSwitch
-from .worker import run_async
+from .worker import run_async, split_error
 
 # ---------------------------------------------------------------------------
 # Parameter dialog
@@ -91,8 +91,9 @@ class _ParamDialog(QtWidgets.QDialog):
 # Main window
 # ---------------------------------------------------------------------------
 
-# Undo/redo entries are full deep-copied clouds: ~101 MB per snapshot on a
-# 2.2 M-point scan, so this cap is a memory bound, not a UX preference.
+# Undo/redo entries are references to earlier clouds (see _push_history), but
+# each is still a whole cloud in memory (~100 MB at 2.2 M points with colours
+# and normals), so this cap is a memory bound, not a UX preference.
 HISTORY_DEPTH = 10
 
 
@@ -296,8 +297,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.display_switch = ToggleSwitch()
         self.display_switch.setChecked(False)  # default = LOD on
         self.display_switch.setToolTip(
-            "Toggle full-resolution display.  Off (default) voxel-downsamples "
-            "clouds over 500 000 points for fast rendering.  On renders every "
+            "Toggle full-resolution display.  Off (default) shows at most 500 000 "
+            "points, a random subset of larger clouds, for fast rendering.  On renders every "
             "point — slower on huge clouds."
         )
         self.display_switch.toggled.connect(self._on_display_lod_toggled)
@@ -645,7 +646,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.redo_stack = self.redo_stack[-HISTORY_DEPTH:]
 
     def _warn(self, title: str, msg: str):
-        QtWidgets.QMessageBox.warning(self, title, msg)
+        """Warning dialog. A worker failure arrives with its traceback
+        appended; show only the reason and keep the traceback under "Show
+        Details…" (it is in the log file too, see worker.py)."""
+        summary, details = split_error(msg)
+        if details is None:
+            QtWidgets.QMessageBox.warning(self, title, msg)
+            return
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, title, summary, QtWidgets.QMessageBox.Ok, self)
+        box.setDetailedText(details)
+        box.exec_()
 
     # -- async plumbing ----------------------------------------------------
 
@@ -1594,14 +1604,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self.history or self._busy:
             return
-        prev = self.history.pop()
-        self._push_redo()  # save current state for Redo
+        # Stacks change only once the worker succeeds, so a failed prepare
+        # cannot lose or duplicate an undo step. `_busy` keeps them untouched
+        # meanwhile.
+        prev = self.history[-1]
 
         def work():
             return self.viewer.prepare_cloud(prev)
 
         def on_success(prepared):
             display, pts, rgba = prepared
+            self.history.pop()
+            self._push_redo()  # save current state for Redo
             self.current_pcd = prev
             self._dirty = True
             self.cloudChanged.emit(prev)
@@ -1618,17 +1632,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self.redo_stack or self._busy:
             return
-        nxt = self.redo_stack.pop()
-        # Save the current state back onto the history stack, but DON'T clear
-        # the rest of redo_stack — re-doing should not invalidate further
-        # forward steps.
-        self._push_history(clear_redo=False)
+        nxt = self.redo_stack[-1]  # popped on success, as in action_undo
 
         def work():
             return self.viewer.prepare_cloud(nxt)
 
         def on_success(prepared):
             display, pts, rgba = prepared
+            self.redo_stack.pop()
+            # Save the current state back onto the history stack, but DON'T
+            # clear the rest of redo_stack — re-doing should not invalidate
+            # further forward steps.
+            self._push_history(clear_redo=False)
             self.current_pcd = nxt
             self._dirty = True
             self.cloudChanged.emit(nxt)
@@ -1641,7 +1656,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def action_reset(self):
         if self.original_pcd is None or self._busy:
             return
-        self._push_history()
         clone = self.original_pcd  # shared, never modified (see _push_history)
 
         def work():
@@ -1649,6 +1663,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def on_success(prepared):
             display, pts, rgba = prepared
+            self._push_history()  # only once it worked, as in action_undo
             self.current_pcd = clone
             self._dirty = True
             self.cloudChanged.emit(clone)

@@ -10,10 +10,24 @@ Signals are emitted via a separate `QObject` (`WorkerSignals`) because
 
 from __future__ import annotations
 
+import logging
 import traceback
 from typing import Any, Callable
 
 from PyQt5 import QtCore
+
+log = logging.getLogger(__name__)
+
+# The error signal carries "Type: message" followed by the traceback.
+_TRACEBACK = "\nTraceback (most recent call last)"
+
+
+def split_error(msg: str) -> tuple[str, str | None]:
+    """Split a worker error string into (one-line reason, full text or None).
+    The reason is what a user needs; the traceback belongs in the log and a
+    "Show Details" box."""
+    summary, sep, _ = msg.partition(_TRACEBACK)
+    return summary.strip(), (msg if sep else None)
 
 
 class WorkerSignals(QtCore.QObject):
@@ -42,6 +56,9 @@ class Worker(QtCore.QRunnable):
         try:
             result = self._fn(*self._args, **self._kwargs)
         except Exception as e:
+            # Logged here so every background failure reaches the log file
+            # with its traceback; only uncaught exceptions did before.
+            log.warning("Background task failed: %s: %s", type(e).__name__, e, exc_info=True)
             self.signals.error.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
         else:
             self.signals.success.emit(result)

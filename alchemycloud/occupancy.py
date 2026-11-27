@@ -361,6 +361,8 @@ def save(grid: OccupancyGrid, pgm_path: str, params: GridParams) -> tuple[Path, 
         # and is ignored by ROS 1 map_server.
         "mode": "trinary",
     }
-    with yaml_path.open("w") as f:
+    # UTF-8 explicitly: map_server reads UTF-8, and the platform default (the
+    # locale code page on Windows) would mangle a non-ASCII map name.
+    with yaml_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(meta, f, sort_keys=False, allow_unicode=True)
     return pgm_path, yaml_path

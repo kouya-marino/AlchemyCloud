@@ -416,6 +416,7 @@ What's covered (109 tests, ~2 s):
 | `tests/test_gui_thread_perf.py` | GUI-thread work removed: colour conversion unchanged, worker-computed colours reused only while valid for the current colour mode, operations never modify their input, undo/redo/reset by reference. |
 | `tests/test_background_ops_perf.py` | Faster background operations give identical results: opt-in GPU radius filter vs CPU (skipped without CUDA), its adaptation checked on the CPU device, CPU fallback, z-clip, packed-key voxel3d dedupe, delayed busy overlay with tools locked immediately. |
 | `tests/test_review_bugs.py` | Review fixes: unsaved-edits prompt on Open, no file re-read after load, closed map previews deleted, home cell at the map edge, viewer tools locked while an operation runs, `ALCHEMYCLOUD_GPU` on/off values. |
+| `tests/test_errors_and_cleanups.py` | Readable error dialogs (traceback under details), failures logged, undo/redo/reset safe when their worker fails, UTF-8 map YAML. |
 
 GUI tests run with `QT_QPA_PLATFORM=offscreen` (set in `conftest.py`) so
 no X server is needed. The pyqtgraph "Requires >= OpenGL 2.1" lines
@@ -434,7 +435,7 @@ reuse, and how to add new tests.
 - **"No near-horizontal plane found"** from Level Ground or Remove Ground. The dominant plane in the scan is a wall or ceiling, not a floor. Crop to the floor area first, or pass a larger `max_tilt_deg` if the scan really is that steep.
 - **"Grid would be N x M cells, above the 25 M limit"** on export. Either the resolution is too fine for the cloud's extent, or — if the message also mentions sensor glitches — a handful of stray returns have inflated the bounding box. Run Statistical Outlier Removal or tighten the Z range.
 - **GPU errors or a crash in radius outlier removal.** The GPU path only runs when you start the app with `ALCHEMYCLOUD_GPU=1`; unset it (or set it to `0`, `false` or `off`) to stay on the CPU. Running out of GPU memory (a large radius on a dense cloud, or another program holding the GPU) already falls back to the CPU on its own, with a warning in the log.
-- **Where are the logs?** `$XDG_STATE_HOME/alchemycloud/alchemycloud.log` on Linux (`~/.local/state/alchemycloud/` by default), `%LOCALAPPDATA%\alchemycloud\` on Windows, `~/Library/Logs/alchemycloud/` on macOS. Run with `-v` for debug output on stderr.
+- **Where are the logs?** `$XDG_STATE_HOME/alchemycloud/alchemycloud.log` on Linux (`~/.local/state/alchemycloud/` by default), `%LOCALAPPDATA%\alchemycloud\` on Windows, `~/Library/Logs/alchemycloud/` on macOS. Run with `-v` for debug output on stderr. Every failed operation is logged with its full traceback, which the error dialog also shows under "Show Details…".
 - **The crop selection feels off.** The rectangle is screen-space, so the crop depends on the current camera angle. Orbit to a clean top-down or side view before drawing the box if you want predictable axis-aligned cuts.
 
 ---
