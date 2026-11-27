@@ -4,7 +4,31 @@ A feature-per-version summary of the LiDAR PCD Editor & Occupancy Grid
 Exporter, from the first release to today. Newest version first. For the
 detailed, change-by-change record see [CHANGELOG.md](CHANGELOG.md).
 
-**Current version: 1.4.1**
+**Current version: 1.5.0**
+
+---
+
+## 1.5.0 — Headless pipeline, safer sessions, faster background work *(2026-11-27)*
+
+- **`alchemycloud-cli`**: the pipeline without the GUI or Qt. Z-clip, voxel,
+  SOR, radius, ground removal, level, tilt and origin run in the order given,
+  then the cloud is saved and/or the PGM + YAML map exported.
+- **Remembered between sessions**: last folder, File → Open Recent, window and
+  toolbar layout. **Drag-and-drop** a cloud onto the window to open it.
+- **Shortcuts** `E` eraser, `C` crop, `M` marker, `Esc` leaves the tool;
+  **Ctrl+S** saves straight to the file last saved this session (the first
+  save still asks).
+- **No data loss on Open**: opening over unsaved edits now asks first.
+- **No freeze after loading**: 1.8 s → 0.1 s (1.8 M points), 4.8 s → 0.16 s
+  (4.9 M points).
+- **Faster background operations**: z-clip 200 → 27 ms, occupancy voxel3d
+  1.0 → 0.15 s, radius outlier removal ~3x on the GPU (opt-in,
+  `ALCHEMYCLOUD_GPU=1`); the busy overlay appears only after 300 ms.
+- **Closed map previews** no longer keep rebuilding the map on every edit.
+- **Readable errors**: a one-line reason, the traceback under Show Details and
+  in the log. Undo/Redo/Reset safe when their worker fails; map YAML always
+  UTF-8.
+- **Python 3.12** tested in CI. **Test suite 191 → 271.**
 
 ---
 
